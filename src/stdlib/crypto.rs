@@ -1,3 +1,3 @@
 pub fn module_name() -> &'static str {
-    "std.http"
+    "std.crypto"
 }

@@ -1,0 +1,5 @@
+#!/usr/bin/env rask --allow-net=example.com
+
+use "https://example.com/lib.rask@v1" as lib
+
+print(lib.version)

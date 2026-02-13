@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 use crate::parser::ast::Stmt;
 
@@ -11,6 +13,77 @@ pub struct UserFunction {
     pub name: String,
     pub params: Vec<String>,
     pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HttpResponseData {
+    pub status: i64,
+    pub body: String,
+    pub headers: HashMap<String, String>,
+    pub url: String,
+}
+
+#[derive(Clone)]
+pub struct PendingHttp {
+    inner: Arc<Mutex<PendingHttpState>>,
+}
+
+struct PendingHttpState {
+    handle: Option<JoinHandle<Result<HttpResponseData, String>>>,
+    result: Option<Result<HttpResponseData, String>>,
+}
+
+impl PendingHttp {
+    pub fn spawn(task: impl FnOnce() -> Result<HttpResponseData, String> + Send + 'static) -> Self {
+        let handle = std::thread::spawn(task);
+        Self {
+            inner: Arc::new(Mutex::new(PendingHttpState {
+                handle: Some(handle),
+                result: None,
+            })),
+        }
+    }
+
+    pub fn resolve(&self) -> Result<HttpResponseData, String> {
+        let maybe_cached = {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|_| "http request state lock poisoned".to_string())?;
+            state.result.clone()
+        };
+        if let Some(result) = maybe_cached {
+            return result;
+        }
+
+        let handle = {
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|_| "http request state lock poisoned".to_string())?;
+            state.handle.take()
+        };
+        let Some(handle) = handle else {
+            return Err("http request missing execution handle".to_string());
+        };
+
+        let result = handle
+            .join()
+            .map_err(|_| "http request worker panicked".to_string())?;
+
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| "http request state lock poisoned".to_string())?;
+        state.result = Some(result.clone());
+        result
+    }
+}
+
+impl fmt::Debug for PendingHttp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PendingHttp")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +104,8 @@ pub enum Value {
         method: String,
     },
     Error(String),
+    HttpResponse(HttpResponseData),
+    HttpPending(PendingHttp),
 }
 
 impl PartialEq for Value {
@@ -43,6 +118,8 @@ impl PartialEq for Value {
             (Value::Nil, Value::Nil) => true,
             (Value::Path(a), Value::Path(b)) => a == b,
             (Value::Error(a), Value::Error(b)) => a == b,
+            (Value::HttpResponse(a), Value::HttpResponse(b)) => a == b,
+            (Value::HttpPending(a), Value::HttpPending(b)) => Arc::ptr_eq(&a.inner, &b.inner),
             (Value::List(a), Value::List(b)) => *a.borrow() == *b.borrow(),
             (Value::Map(a), Value::Map(b)) => *a.borrow() == *b.borrow(),
             _ => false,
@@ -70,6 +147,7 @@ impl Value {
             Value::List(values) => !values.borrow().is_empty(),
             Value::Map(values) => !values.borrow().is_empty(),
             Value::Error(_) => false,
+            Value::HttpResponse(_) | Value::HttpPending(_) => true,
             Value::UserFunction(_)
             | Value::NativeFunction(_)
             | Value::Module(_)
@@ -92,6 +170,8 @@ impl Value {
             Value::Module(_) => "module",
             Value::BoundMethod { .. } => "bound_method",
             Value::Error(_) => "error",
+            Value::HttpResponse(_) => "http_response",
+            Value::HttpPending(_) => "http_pending",
         }
     }
 }
@@ -128,6 +208,10 @@ impl fmt::Display for Value {
             Value::Module(_) => write!(f, "<module>"),
             Value::BoundMethod { method, .. } => write!(f, "<method {}>", method),
             Value::Error(message) => write!(f, "Error({})", message),
+            Value::HttpResponse(response) => {
+                write!(f, "<http {} {}>", response.status, response.url)
+            }
+            Value::HttpPending(_) => write!(f, "<http pending>"),
         }
     }
 }

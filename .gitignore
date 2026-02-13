@@ -1,5 +1,6 @@
-# Rust build output
+# Rust build output and plans
 /target/
+/plans/
 
 # Editor/IDE
 .vscode/
@@ -15,6 +16,3 @@ Thumbs.db
 *.log
 *.tmp
 *.temp
-
-# Plans
-/plans/

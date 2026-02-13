@@ -6,4 +6,3 @@ pub fn underline(line: &str, column: usize) -> String {
     marker.push('^');
     format!("{}\n{}", line, marker)
 }
-

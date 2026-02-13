@@ -10,17 +10,11 @@ pub enum Type {
     Error,
     List(Box<Type>),
     Map(Box<Type>, Box<Type>),
-    Function {
-        params: Vec<Type>,
-        ret: Box<Type>,
-    },
+    Function { params: Vec<Type>, ret: Box<Type> },
     Nullable(Box<Type>),
     Union(Vec<Type>),
     Result(Box<Type>, Box<Type>),
-    Named {
-        name: String,
-        args: Vec<Type>,
-    },
+    Named { name: String, args: Vec<Type> },
     Unknown,
 }
 
@@ -64,12 +58,16 @@ impl Type {
                 other => Type::Union(vec![other, Type::Nil]).normalize(),
             },
             Type::List(item) => Type::List(Box::new(item.normalize())),
-            Type::Map(key, value) => Type::Map(Box::new(key.normalize()), Box::new(value.normalize())),
+            Type::Map(key, value) => {
+                Type::Map(Box::new(key.normalize()), Box::new(value.normalize()))
+            }
             Type::Function { params, ret } => Type::Function {
                 params: params.into_iter().map(Type::normalize).collect(),
                 ret: Box::new(ret.normalize()),
             },
-            Type::Result(ok, err) => Type::Result(Box::new(ok.normalize()), Box::new(err.normalize())),
+            Type::Result(ok, err) => {
+                Type::Result(Box::new(ok.normalize()), Box::new(err.normalize()))
+            }
             Type::Named { name, args } => Type::Named {
                 name,
                 args: args.into_iter().map(Type::normalize).collect(),
@@ -147,8 +145,12 @@ pub fn is_assignable(from: &Type, to: &Type) -> bool {
     }
 
     match (from, to) {
-        (_, Type::Union(options)) => options.iter().any(|candidate| is_assignable(from, candidate)),
-        (Type::Union(from_options), _) => from_options.iter().all(|candidate| is_assignable(candidate, to)),
+        (_, Type::Union(options)) => options
+            .iter()
+            .any(|candidate| is_assignable(from, candidate)),
+        (Type::Union(from_options), _) => from_options
+            .iter()
+            .all(|candidate| is_assignable(candidate, to)),
         (Type::Nil, Type::Nullable(_)) => true,
         (other, Type::Nullable(inner)) => is_assignable(other, inner),
         (Type::Int, Type::Float) => true,
@@ -453,4 +455,3 @@ impl<'a> TypeParser<'a> {
         }
     }
 }
-

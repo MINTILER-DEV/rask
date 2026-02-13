@@ -1,6 +1,8 @@
 use rask::typechecker::types::{is_assignable, Type};
 
-fn check(source: &str) -> Result<rask::typechecker::TypeCheckOutput, Vec<rask::typechecker::TypeError>> {
+fn check(
+    source: &str,
+) -> Result<rask::typechecker::TypeCheckOutput, Vec<rask::typechecker::TypeError>> {
     let tokens = rask::lexer::lex(source).expect("lex should succeed");
     let mut parser = rask::parser::Parser::new(tokens);
     let program = parser.parse_program().expect("parse should succeed");
@@ -13,10 +15,7 @@ fn parses_complex_type_annotation() {
     let parsed = Type::parse("(int, string?) -> Result<float, Error>").expect("type parse");
     let expected = Type::Function {
         params: vec![Type::Int, Type::Union(vec![Type::String, Type::Nil])],
-        ret: Box::new(Type::Result(
-            Box::new(Type::Float),
-            Box::new(Type::Error),
-        )),
+        ret: Box::new(Type::Result(Box::new(Type::Float), Box::new(Type::Error))),
     };
     assert_eq!(parsed, expected);
 }
@@ -81,9 +80,8 @@ fn checks_match_expression_inference() {
 
 #[test]
 fn checks_destructuring_bindings() {
-    let output =
-        check("def first(values: List<int>) -> int { [head, _] = values; return head }")
-            .expect("typecheck should succeed");
+    let output = check("def first(values: List<int>) -> int { [head, _] = values; return head }")
+        .expect("typecheck should succeed");
     match output.inferred_types.get("first") {
         Some(Type::Function { ret, .. }) => assert_eq!(ret.as_ref(), &Type::Int),
         other => panic!("expected function type for first, got {:?}", other),
@@ -92,7 +90,8 @@ fn checks_destructuring_bindings() {
 
 #[test]
 fn detects_match_pattern_type_mismatch() {
-    let errors = check("value = match 1 { \"a\" => 1, _ => 2 }").expect_err("typecheck should fail");
+    let errors =
+        check("value = match 1 { \"a\" => 1, _ => 2 }").expect_err("typecheck should fail");
     assert!(
         errors
             .iter()

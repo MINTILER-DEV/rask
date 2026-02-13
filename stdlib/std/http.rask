@@ -1,8 +1,23 @@
-# std.http (planned)
+# std.http
 #
-# Reserved module namespace for Phase 4 HTTP client work.
-# Target API:
-# - http.get(url)
-# - http.post(url, body)
-# - response.status / response.text() / response.json()
-
+# Runtime-backed module for HTTP requests.
+#
+# Functions:
+# - http.get(url, headers?, timeout_ms?)
+# - http.post(url, body, headers?, timeout_ms?)
+# - http.put(url, body, headers?, timeout_ms?)
+# - http.delete(url, headers?, timeout_ms?)
+#
+# Response object:
+# - response.status -> int
+# - response.url -> string
+# - response.headers -> Map<string, string>
+# - response.text() -> string
+# - response.json() -> value
+#
+# Security:
+# - requires --allow-net=<domain> (or --allow-all)
+#
+# Concurrency behavior:
+# - requests are started immediately
+# - response values resolve lazily when status/text/json are accessed

@@ -5,7 +5,7 @@ use std::error::Error;
 use std::fmt;
 
 use crate::lexer::token::{Token, TokenKind};
-use ast::{MapPatternEntry, Param, Pattern, Program, Stmt};
+use ast::{MapPatternEntry, Param, Pattern, Program, Stmt, UseTarget};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseError {
@@ -88,11 +88,28 @@ impl Parser {
     }
 
     fn use_statement(&mut self) -> Result<Stmt, ParseError> {
-        let mut path = Vec::new();
-        path.push(self.consume_identifier("expected module path after 'use'")?);
-        while self.matches_symbol(TokenKind::Dot) {
-            path.push(self.consume_identifier("expected identifier after '.' in use path")?);
-        }
+        let target = match self.peek_kind().clone() {
+            TokenKind::String { value, .. } => {
+                self.advance();
+                UseTarget::Url(value)
+            }
+            TokenKind::Identifier(_) => {
+                let mut path = Vec::new();
+                path.push(self.consume_identifier("expected module path after 'use'")?);
+                while self.matches_symbol(TokenKind::Dot) {
+                    path.push(
+                        self.consume_identifier("expected identifier after '.' in use path")?,
+                    );
+                }
+                UseTarget::ModulePath(path)
+            }
+            _ => {
+                return Err(ParseError::new(
+                    "expected module path or URL string after 'use'",
+                    self.peek(),
+                ))
+            }
+        };
 
         let alias = if self.matches_identifier_literal("as") {
             Some(self.consume_identifier("expected alias name after 'as'")?)
@@ -100,7 +117,7 @@ impl Parser {
             None
         };
 
-        Ok(Stmt::Use { path, alias })
+        Ok(Stmt::Use { target, alias })
     }
 
     fn function_definition(&mut self) -> Result<Stmt, ParseError> {
@@ -113,9 +130,7 @@ impl Parser {
                 let param_name = self.consume_identifier("expected parameter name")?;
                 let type_annotation = if self.matches_symbol(TokenKind::Colon) {
                     Some(self.collect_type_annotation_until(
-                        |kind| {
-                            matches!(kind, TokenKind::Comma | TokenKind::RightParen)
-                        },
+                        |kind| matches!(kind, TokenKind::Comma | TokenKind::RightParen),
                         "expected parameter type annotation after ':'",
                     )?)
                 } else {
@@ -209,7 +224,10 @@ impl Parser {
 
     fn destructure_declaration(&mut self) -> Result<Stmt, ParseError> {
         let pattern = self.parse_pattern()?;
-        self.consume_symbol(TokenKind::Equal, "expected '=' in destructuring declaration")?;
+        self.consume_symbol(
+            TokenKind::Equal,
+            "expected '=' in destructuring declaration",
+        )?;
         let initializer = self.expression()?;
         Ok(Stmt::DestructureDecl {
             pattern,
@@ -229,7 +247,10 @@ impl Parser {
     }
 
     fn looks_like_destructure_decl(&self) -> bool {
-        if !matches!(self.peek_kind(), TokenKind::LeftBracket | TokenKind::LeftBrace) {
+        if !matches!(
+            self.peek_kind(),
+            TokenKind::LeftBracket | TokenKind::LeftBrace
+        ) {
             return false;
         }
 
@@ -243,7 +264,9 @@ impl Parser {
                 TokenKind::LeftBrace => brace_depth += 1,
                 TokenKind::RightBrace => brace_depth -= 1,
                 TokenKind::Equal if bracket_depth == 0 && brace_depth == 0 => return true,
-                TokenKind::Semicolon | TokenKind::Newline if bracket_depth == 0 && brace_depth == 0 => {
+                TokenKind::Semicolon | TokenKind::Newline
+                    if bracket_depth == 0 && brace_depth == 0 =>
+                {
                     return false
                 }
                 TokenKind::Eof => return false,
@@ -378,8 +401,7 @@ impl Parser {
     }
 
     pub(crate) fn skip_statement_breaks(&mut self) {
-        while self.matches_symbol(TokenKind::Newline) || self.matches_symbol(TokenKind::Semicolon)
-        {
+        while self.matches_symbol(TokenKind::Newline) || self.matches_symbol(TokenKind::Semicolon) {
         }
     }
 
@@ -396,7 +418,11 @@ impl Parser {
         }
     }
 
-    pub(crate) fn consume_symbol(&mut self, kind: TokenKind, message: &str) -> Result<(), ParseError> {
+    pub(crate) fn consume_symbol(
+        &mut self,
+        kind: TokenKind,
+        message: &str,
+    ) -> Result<(), ParseError> {
         if self.check_kind(&kind) {
             self.advance();
             Ok(())
@@ -454,7 +480,9 @@ impl Parser {
     }
 
     fn peek_kind_at(&self, offset: usize) -> Option<&TokenKind> {
-        self.tokens.get(self.current + offset).map(|token| &token.kind)
+        self.tokens
+            .get(self.current + offset)
+            .map(|token| &token.kind)
     }
 
     pub(crate) fn previous(&self) -> &Token {

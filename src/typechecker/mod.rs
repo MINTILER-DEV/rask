@@ -95,6 +95,9 @@ impl TypeChecker {
         global.insert("json".to_string(), Type::Unknown);
         global.insert("path".to_string(), Type::Unknown);
         global.insert("env".to_string(), Type::Unknown);
+        global.insert("http".to_string(), Type::Unknown);
+        global.insert("time".to_string(), Type::Unknown);
+        global.insert("crypto".to_string(), Type::Unknown);
         global.insert(
             "Path".to_string(),
             Type::Function {
@@ -132,10 +135,10 @@ impl TypeChecker {
 
     fn check_statement(&mut self, statement: &Stmt, errors: &mut Vec<TypeError>) {
         match statement {
-            Stmt::Use { path, alias } => {
+            Stmt::Use { target, alias } => {
                 let name = alias
                     .clone()
-                    .unwrap_or_else(|| path.last().cloned().unwrap_or_default());
+                    .unwrap_or_else(|| target.default_binding_name());
                 self.define(name, Type::Unknown);
             }
             Stmt::VarDecl {
@@ -188,7 +191,9 @@ impl TypeChecker {
     ) {
         let param_types = params
             .iter()
-            .map(|param| self.parse_declared_type(param.type_annotation.as_deref(), &param.name, errors))
+            .map(|param| {
+                self.parse_declared_type(param.type_annotation.as_deref(), &param.name, errors)
+            })
             .collect::<Vec<_>>();
 
         let declared_return = self.parse_declared_type(return_type, name, errors);
@@ -236,7 +241,10 @@ impl TypeChecker {
     }
 
     fn check_return_statement(&mut self, value: Option<&Expr>, errors: &mut Vec<TypeError>) {
-        let Some(declared_return) = self.function_stack.last().map(|ctx| ctx.declared_return.clone())
+        let Some(declared_return) = self
+            .function_stack
+            .last()
+            .map(|ctx| ctx.declared_return.clone())
         else {
             errors.push(TypeError::new("'return' can only appear inside a function"));
             return;
@@ -257,7 +265,10 @@ impl TypeChecker {
             )));
         }
 
-        let ctx = self.function_stack.last_mut().expect("function context exists");
+        let ctx = self
+            .function_stack
+            .last_mut()
+            .expect("function context exists");
         ctx.inferred_returns.push(return_type);
     }
 
@@ -439,7 +450,9 @@ impl TypeChecker {
                 let index_type = self.infer_expr(index, errors);
                 match object_type {
                     Type::List(inner) => {
-                        if !is_assignable(&index_type, &Type::Int) && !matches!(index_type, Type::Unknown) {
+                        if !is_assignable(&index_type, &Type::Int)
+                            && !matches!(index_type, Type::Unknown)
+                        {
                             errors.push(TypeError::new(format!(
                                 "list index must be int, got '{}'",
                                 index_type
@@ -459,7 +472,9 @@ impl TypeChecker {
                         *value
                     }
                     Type::String => {
-                        if !is_assignable(&index_type, &Type::Int) && !matches!(index_type, Type::Unknown) {
+                        if !is_assignable(&index_type, &Type::Int)
+                            && !matches!(index_type, Type::Unknown)
+                        {
                             errors.push(TypeError::new(format!(
                                 "string index must be int, got '{}'",
                                 index_type
@@ -469,10 +484,7 @@ impl TypeChecker {
                     }
                     Type::Unknown => Type::Unknown,
                     other => {
-                        errors.push(TypeError::new(format!(
-                            "cannot index type '{}'",
-                            other
-                        )));
+                        errors.push(TypeError::new(format!("cannot index type '{}'", other)));
                         Type::Unknown
                     }
                 }
@@ -480,9 +492,16 @@ impl TypeChecker {
         }
     }
 
-    fn infer_match(&mut self, subject_type: Type, arms: &[MatchArm], errors: &mut Vec<TypeError>) -> Type {
+    fn infer_match(
+        &mut self,
+        subject_type: Type,
+        arms: &[MatchArm],
+        errors: &mut Vec<TypeError>,
+    ) -> Type {
         if arms.is_empty() {
-            errors.push(TypeError::new("match expression must contain at least one arm"));
+            errors.push(TypeError::new(
+                "match expression must contain at least one arm",
+            ));
             return Type::Unknown;
         }
 
@@ -497,7 +516,12 @@ impl TypeChecker {
         Type::Union(arm_types).normalize()
     }
 
-    fn validate_pattern(&self, pattern: &Pattern, subject_type: &Type, errors: &mut Vec<TypeError>) {
+    fn validate_pattern(
+        &self,
+        pattern: &Pattern,
+        subject_type: &Type,
+        errors: &mut Vec<TypeError>,
+    ) {
         let expected = pattern_expected_type(pattern);
         if let Some(expected_type) = expected {
             if !is_assignable(&expected_type, subject_type)
@@ -639,7 +663,12 @@ impl TypeChecker {
         }
     }
 
-    fn infer_call(&self, callee_type: &Type, arg_types: &[Type], errors: &mut Vec<TypeError>) -> Type {
+    fn infer_call(
+        &self,
+        callee_type: &Type,
+        arg_types: &[Type],
+        errors: &mut Vec<TypeError>,
+    ) -> Type {
         match callee_type {
             Type::Function { params, ret } => {
                 if params.len() != arg_types.len() {
@@ -694,7 +723,9 @@ impl TypeChecker {
 
     fn record_implicit_return(&mut self, return_type: Type, errors: &mut Vec<TypeError>) {
         let Some(ctx) = self.function_stack.last_mut() else {
-            errors.push(TypeError::new("'or return' can only appear inside a function"));
+            errors.push(TypeError::new(
+                "'or return' can only appear inside a function",
+            ));
             return;
         };
         if !matches!(ctx.declared_return, Type::Unknown)

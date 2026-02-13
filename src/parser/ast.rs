@@ -6,7 +6,7 @@ pub struct Program {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Use {
-        path: Vec<String>,
+        target: UseTarget,
         alias: Option<String>,
     },
     VarDecl {
@@ -31,6 +31,51 @@ pub enum Stmt {
         expr: Expr,
     },
     Expr(Expr),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum UseTarget {
+    ModulePath(Vec<String>),
+    Url(String),
+}
+
+impl UseTarget {
+    pub fn default_binding_name(&self) -> String {
+        match self {
+            UseTarget::ModulePath(path) => {
+                path.last().cloned().unwrap_or_else(|| "module".to_string())
+            }
+            UseTarget::Url(spec) => default_name_for_url_import(spec),
+        }
+    }
+}
+
+fn default_name_for_url_import(spec: &str) -> String {
+    let base = spec
+        .split('/')
+        .next_back()
+        .unwrap_or("module")
+        .split('@')
+        .next()
+        .unwrap_or("module")
+        .trim_end_matches(".rask");
+
+    let mut out = String::new();
+    for ch in base.chars() {
+        if ch == '_' || ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+
+    if out.is_empty() {
+        "module".to_string()
+    } else if out.chars().next().unwrap_or('m').is_ascii_digit() {
+        format!("m_{}", out)
+    } else {
+        out
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

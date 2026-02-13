@@ -7,7 +7,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     run_with_permissions(crate::runtime::Permissions::default())
 }
 
-pub fn run_with_permissions(permissions: crate::runtime::Permissions) -> Result<(), Box<dyn Error>> {
+pub fn run_with_permissions(
+    permissions: crate::runtime::Permissions,
+) -> Result<(), Box<dyn Error>> {
     let stdin = io::stdin();
     let mut line = String::new();
     let mut checker = crate::typechecker::TypeChecker::new();

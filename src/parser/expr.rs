@@ -18,7 +18,10 @@ impl Parser {
                     name,
                     value: Box::new(value),
                 }),
-                _ => Err(ParseError::new("invalid assignment target", self.previous())),
+                _ => Err(ParseError::new(
+                    "invalid assignment target",
+                    self.previous(),
+                )),
             };
         }
 
@@ -203,8 +206,7 @@ impl Parser {
 
             if self.matches_symbol(TokenKind::Question) {
                 self.consume_symbol(TokenKind::Dot, "expected '.' after '?' in optional chain")?;
-                let property =
-                    self.consume_identifier("expected property name after '?.'")?;
+                let property = self.consume_identifier("expected property name after '?.'")?;
                 expr = Expr::Member {
                     object: Box::new(expr),
                     property,
@@ -215,7 +217,10 @@ impl Parser {
 
             if self.matches_symbol(TokenKind::LeftBracket) {
                 let index = self.expression()?;
-                self.consume_symbol(TokenKind::RightBracket, "expected ']' after index expression")?;
+                self.consume_symbol(
+                    TokenKind::RightBracket,
+                    "expected ']' after index expression",
+                )?;
                 expr = Expr::Index {
                     object: Box::new(expr),
                     index: Box::new(index),
@@ -306,7 +311,10 @@ impl Parser {
             } else {
                 None
             };
-            self.consume_symbol(TokenKind::RightBracket, "expected ']' after list comprehension")?;
+            self.consume_symbol(
+                TokenKind::RightBracket,
+                "expected ']' after list comprehension",
+            )?;
             return Ok(Expr::ListComprehension {
                 expr: Box::new(first_expr),
                 item_name,

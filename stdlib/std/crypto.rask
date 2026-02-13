@@ -1,0 +1,6 @@
+# std.crypto (reference module)
+#
+# Runtime-backed module for hashing utilities.
+#
+# Functions:
+# - crypto.sha256(text) -> string (lowercase hex digest)

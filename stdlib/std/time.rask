@@ -1,0 +1,8 @@
+# std.time (reference module)
+#
+# Runtime-backed module for time utilities.
+#
+# Functions:
+# - time.now_ms() -> int (unix epoch milliseconds)
+# - time.now_s() -> int (unix epoch seconds)
+# - time.sleep(ms) -> nil

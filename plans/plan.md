@@ -151,14 +151,14 @@
 - [x] Graceful error messages when denied
 
 #### Week 15-16: HTTP Client
-- [ ] Built-in HTTP module
+- [x] Built-in HTTP module
   - `http.get(url)` - GET request
   - `http.post(url, body)` - POST request
   - `http.put()`, `http.delete()`
   - Response object with `.json()`, `.text()`, `.status`
-- [ ] Timeout handling
-- [ ] Basic headers support
-- [ ] Concurrent requests work automatically
+- [x] Timeout handling
+- [x] Basic headers support
+- [x] Concurrent requests work automatically (lazy/pending response execution)
 
 **Milestone**: Scripts can fetch data from APIs securely
 
@@ -169,21 +169,21 @@
 **Goal**: Import from URLs, no central registry, hermetic builds
 
 #### Week 17-18: URL Imports
-- [ ] Import syntax: `use "https://example.com/lib.rask" as lib`
-- [ ] Download and cache imports
+- [x] Import syntax: `use "https://example.com/lib.rask" as lib`
+- [x] Download and cache imports
   - Hash-based caching (content-addressed)
   - Global cache location
   - Version pinning: `@v1.2.3`
-- [ ] Lockfile generation
+- [x] Lockfile generation
   - Auto-generate `.rask.lock`
   - Lock exact hashes/versions
   - Verify on subsequent runs
-- [ ] Namespace isolation
+- [x] Namespace isolation
   - Each import gets own namespace
   - No dependency conflicts
 
 #### Week 19-20: Standard Library Organization
-- [ ] Organize std lib into modules
+- [x] Organize std lib into modules
   - `std.fs` - filesystem
   - `std.http` - HTTP client
   - `std.json` - JSON parsing
@@ -191,7 +191,7 @@
   - `std.env` - environment variables
   - `std.time` - time/date handling
   - `std.crypto` - hashing, etc.
-- [ ] Documentation system
+- [x] Documentation system
   - Docstrings in code
   - Auto-generate docs
 

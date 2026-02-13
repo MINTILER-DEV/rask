@@ -1,4 +1,4 @@
-use rask::parser::ast::{BinaryOp, Expr, Pattern, Stmt};
+use rask::parser::ast::{BinaryOp, Expr, Pattern, Stmt, UseTarget};
 
 fn parse(source: &str) -> Vec<Stmt> {
     let tokens = rask::lexer::lex(source).expect("lex should succeed");
@@ -149,9 +149,27 @@ fn parses_destructuring_declaration() {
 fn parses_use_statement_with_alias() {
     let statements = parse("use std.json as jsonlib");
     match &statements[0] {
-        Stmt::Use { path, alias } => {
-            assert_eq!(path, &vec!["std".to_string(), "json".to_string()]);
+        Stmt::Use { target, alias } => {
+            assert_eq!(
+                target,
+                &UseTarget::ModulePath(vec!["std".to_string(), "json".to_string()])
+            );
             assert_eq!(alias.as_deref(), Some("jsonlib"));
+        }
+        _ => panic!("expected use statement"),
+    }
+}
+
+#[test]
+fn parses_url_use_statement_with_alias() {
+    let statements = parse("use \"https://example.com/lib.rask@v1\" as lib");
+    match &statements[0] {
+        Stmt::Use { target, alias } => {
+            assert_eq!(
+                target,
+                &UseTarget::Url("https://example.com/lib.rask@v1".to_string())
+            );
+            assert_eq!(alias.as_deref(), Some("lib"));
         }
         _ => panic!("expected use statement"),
     }

@@ -4,13 +4,17 @@ pub mod value;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::Duration;
 
 use crate::parser::ast::{
-    BinaryOp, Expr, MapEntryExpr, MatchArm, Pattern, Program, Stmt, UnaryOp,
+    BinaryOp, Expr, MapEntryExpr, MatchArm, Pattern, Program, Stmt, UnaryOp, UseTarget,
 };
 
-use self::value::{UserFunction, Value};
+use self::value::{HttpResponseData, PendingHttp, UserFunction, Value};
+use sha2::{Digest, Sha256};
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone, Default)]
@@ -66,12 +70,64 @@ impl Permissions {
         }
     }
 
+    pub fn check_net(&self, url: &str) -> Result<(), RuntimeError> {
+        if self.allow_all {
+            return Ok(());
+        }
+
+        if self.allow_net.is_empty() {
+            return Err(RuntimeError::new(format!(
+                "network access denied for '{}'; pass --allow-net=<domain> or --allow-all",
+                url
+            )));
+        }
+
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|err| RuntimeError::new(format!("invalid URL '{}': {}", url, err)))?;
+
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| RuntimeError::new(format!("URL has no host: '{}'", url)))?
+            .to_ascii_lowercase();
+        let host_port = if let Some(port) = parsed.port() {
+            format!("{}:{}", host, port)
+        } else {
+            host.clone()
+        };
+
+        let allowed = self
+            .allow_net
+            .iter()
+            .map(|entry| normalize_allowed_net_entry(entry))
+            .any(|entry| {
+                if entry == "*" {
+                    return true;
+                }
+                if entry.contains(':') {
+                    return entry == host_port;
+                }
+                host == entry || host.ends_with(&format!(".{}", entry))
+            });
+
+        if allowed {
+            Ok(())
+        } else {
+            Err(RuntimeError::new(format!(
+                "network access denied for host '{}'; allowed: {}; pass --allow-net=<domain> or --allow-all",
+                host,
+                self.allow_net.join(",")
+            )))
+        }
+    }
+
     fn is_allowed(&self, path: &Path, allowed_roots: &[PathBuf]) -> bool {
         if allowed_roots.is_empty() {
             return false;
         }
         let normalized_path = normalize_path(path);
-        allowed_roots.iter().any(|root| normalized_path.starts_with(root))
+        allowed_roots
+            .iter()
+            .any(|root| normalized_path.starts_with(root))
     }
 }
 
@@ -106,6 +162,8 @@ pub struct Runtime {
     scopes: Vec<HashMap<String, Value>>,
     pending_return: Option<Value>,
     permissions: Permissions,
+    loaded_url_modules: HashMap<String, Value>,
+    import_stack: Vec<String>,
 }
 
 impl Runtime {
@@ -118,6 +176,8 @@ impl Runtime {
             scopes: vec![builtins::core_globals()],
             pending_return: None,
             permissions,
+            loaded_url_modules: HashMap::new(),
+            import_stack: Vec::new(),
         }
     }
 
@@ -127,13 +187,17 @@ impl Runtime {
             match self.execute_statement(statement)? {
                 StmtFlow::Continue(value) => last_value = value,
                 StmtFlow::Return(_) => {
-                    return Err(RuntimeError::new("'return' is only valid inside a function"))
+                    return Err(RuntimeError::new(
+                        "'return' is only valid inside a function",
+                    ))
                 }
             }
         }
 
         if self.pending_return.is_some() {
-            return Err(RuntimeError::new("'return' is only valid inside a function"));
+            return Err(RuntimeError::new(
+                "'return' is only valid inside a function",
+            ));
         }
 
         Ok(last_value)
@@ -141,8 +205,8 @@ impl Runtime {
 
     fn execute_statement(&mut self, statement: &Stmt) -> Result<StmtFlow, RuntimeError> {
         match statement {
-            Stmt::Use { path, alias } => {
-                self.execute_use(path, alias.as_deref())?;
+            Stmt::Use { target, alias } => {
+                self.execute_use(target, alias.as_deref())?;
                 Ok(StmtFlow::Continue(Value::Nil))
             }
             Stmt::VarDecl {
@@ -167,10 +231,7 @@ impl Runtime {
                 Ok(StmtFlow::Continue(Value::Nil))
             }
             Stmt::FunctionDef {
-                name,
-                params,
-                body,
-                ..
+                name, params, body, ..
             } => {
                 let params = params.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
                 let func = UserFunction {
@@ -208,7 +269,18 @@ impl Runtime {
         }
     }
 
-    fn execute_use(&mut self, path: &[String], alias: Option<&str>) -> Result<(), RuntimeError> {
+    fn execute_use(&mut self, target: &UseTarget, alias: Option<&str>) -> Result<(), RuntimeError> {
+        match target {
+            UseTarget::ModulePath(path) => self.execute_module_use(path, alias),
+            UseTarget::Url(spec) => self.execute_url_use(spec, alias),
+        }
+    }
+
+    fn execute_module_use(
+        &mut self,
+        path: &[String],
+        alias: Option<&str>,
+    ) -> Result<(), RuntimeError> {
         if path.is_empty() {
             return Err(RuntimeError::new("use path cannot be empty"));
         }
@@ -226,6 +298,88 @@ impl Runtime {
         let bind_name = alias.unwrap_or(&module_name).to_string();
         self.define(bind_name, module);
         Ok(())
+    }
+
+    fn execute_url_use(&mut self, spec: &str, alias: Option<&str>) -> Result<(), RuntimeError> {
+        let cache_key = spec.to_string();
+        if let Some(module) = self.loaded_url_modules.get(&cache_key).cloned() {
+            let bind_name = alias
+                .map(ToString::to_string)
+                .unwrap_or_else(|| UseTarget::Url(cache_key.clone()).default_binding_name());
+            self.define(bind_name, module);
+            return Ok(());
+        }
+
+        if self.import_stack.contains(&cache_key) {
+            return Err(RuntimeError::new(format!(
+                "circular URL import detected: {}",
+                self.import_stack.join(" -> ")
+            )));
+        }
+
+        self.import_stack.push(cache_key.clone());
+        let loaded = (|| {
+            let resolved = resolve_url_import(spec, &self.permissions)?;
+            let mut module_runtime = Runtime::with_permissions(self.permissions.clone());
+            module_runtime.import_stack = self.import_stack.clone();
+            module_runtime.loaded_url_modules = self.loaded_url_modules.clone();
+            let module = module_runtime.evaluate_imported_module(&resolved.source, spec)?;
+            Ok(module)
+        })();
+        self.import_stack.pop();
+
+        let module = loaded?;
+        self.loaded_url_modules
+            .insert(cache_key.clone(), module.clone());
+        let bind_name = alias
+            .map(ToString::to_string)
+            .unwrap_or_else(|| UseTarget::Url(cache_key).default_binding_name());
+        self.define(bind_name, module);
+        Ok(())
+    }
+
+    fn evaluate_imported_module(
+        &mut self,
+        source: &str,
+        origin: &str,
+    ) -> Result<Value, RuntimeError> {
+        let tokens = crate::lexer::lex(source).map_err(|err| {
+            RuntimeError::new(format!(
+                "failed to lex imported module '{}': {}",
+                origin, err
+            ))
+        })?;
+        let mut parser = crate::parser::Parser::new(tokens);
+        let program = parser.parse_program().map_err(|err| {
+            RuntimeError::new(format!(
+                "failed to parse imported module '{}': {}",
+                origin, err
+            ))
+        })?;
+
+        let mut checker = crate::typechecker::TypeChecker::new();
+        if let Err(errors) = checker.check_program(&program) {
+            let message = errors
+                .into_iter()
+                .map(|err| err.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(RuntimeError::new(format!(
+                "type check failed for imported module '{}': {}",
+                origin, message
+            )));
+        }
+
+        self.run_program(&program)?;
+        let builtins = builtins::core_globals();
+        let mut exports = HashMap::new();
+        for (name, value) in self.scopes.first().expect("global scope exists") {
+            if builtins.contains_key(name) {
+                continue;
+            }
+            exports.insert(name.clone(), value.clone());
+        }
+        Ok(Value::Module(Rc::new(exports)))
     }
 
     fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
@@ -301,9 +455,10 @@ impl Runtime {
                 let value = self.eval_expr(inner)?;
                 match value {
                     Value::Nil => Err(RuntimeError::new("panic unwrap failed on nil")),
-                    Value::Error(message) => {
-                        Err(RuntimeError::new(format!("panic unwrap failed: {}", message)))
-                    }
+                    Value::Error(message) => Err(RuntimeError::new(format!(
+                        "panic unwrap failed: {}",
+                        message
+                    ))),
                     other => Ok(other),
                 }
             }
@@ -397,7 +552,11 @@ impl Runtime {
         }
     }
 
-    fn eval_match(&mut self, subject_value: &Value, arms: &[MatchArm]) -> Result<Value, RuntimeError> {
+    fn eval_match(
+        &mut self,
+        subject_value: &Value,
+        arms: &[MatchArm],
+    ) -> Result<Value, RuntimeError> {
         for arm in arms {
             if self.pattern_matches(&arm.pattern, subject_value)? {
                 self.push_scope();
@@ -540,6 +699,14 @@ impl Runtime {
             "path.cwd" => self.native_path_cwd(args),
             "path.to_string" => self.native_path_to_string(args),
             "env.get" => self.native_env_get(args),
+            "time.now_ms" => self.native_time_now_ms(args),
+            "time.now_s" => self.native_time_now_s(args),
+            "time.sleep" => self.native_time_sleep(args),
+            "crypto.sha256" => self.native_crypto_sha256(args),
+            "http.get" => self.native_http_get(args),
+            "http.post" => self.native_http_post(args),
+            "http.put" => self.native_http_put(args),
+            "http.delete" => self.native_http_delete(args),
             other => Err(RuntimeError::new(format!(
                 "unknown native function '{}'",
                 other
@@ -558,6 +725,11 @@ impl Runtime {
             Value::List(values) => self.call_list_method(values, method, args),
             Value::Map(values) => self.call_map_method(values, method, args),
             Value::Path(path) => self.call_path_method(path, method, args),
+            Value::HttpResponse(response) => self.call_http_response_method(response, method, args),
+            Value::HttpPending(pending) => {
+                let response = self.resolve_http_pending(&pending)?;
+                self.call_http_response_method(response, method, args)
+            }
             other => Err(RuntimeError::new(format!(
                 "type '{}' has no methods",
                 other.type_name()
@@ -670,7 +842,10 @@ impl Runtime {
                 sort_values(&mut cloned)?;
                 Ok(Value::list(cloned))
             }
-            other => Err(RuntimeError::new(format!("unknown list method '{}'", other))),
+            other => Err(RuntimeError::new(format!(
+                "unknown list method '{}'",
+                other
+            ))),
         }
     }
 
@@ -754,7 +929,39 @@ impl Runtime {
                 expect_arity("path.to_string", &args, 0)?;
                 Ok(Value::String(path.to_string_lossy().to_string()))
             }
-            other => Err(RuntimeError::new(format!("unknown path method '{}'", other))),
+            other => Err(RuntimeError::new(format!(
+                "unknown path method '{}'",
+                other
+            ))),
+        }
+    }
+
+    fn call_http_response_method(
+        &mut self,
+        response: HttpResponseData,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "text" => {
+                expect_arity("http.response.text", &args, 0)?;
+                Ok(Value::String(response.body))
+            }
+            "json" => {
+                expect_arity("http.response.json", &args, 0)?;
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&response.body).map_err(|err| {
+                        RuntimeError::new(format!(
+                            "http.response.json failed to parse response body: {}",
+                            err
+                        ))
+                    })?;
+                Ok(json_to_value(parsed))
+            }
+            other => Err(RuntimeError::new(format!(
+                "unknown http response method '{}'",
+                other
+            ))),
         }
     }
 
@@ -829,6 +1036,166 @@ impl Runtime {
         Ok(Value::String(path.to_string_lossy().to_string()))
     }
 
+    fn native_http_get(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        self.native_http_request(reqwest::Method::GET, args, false)
+    }
+
+    fn native_http_post(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        self.native_http_request(reqwest::Method::POST, args, true)
+    }
+
+    fn native_http_put(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        self.native_http_request(reqwest::Method::PUT, args, true)
+    }
+
+    fn native_http_delete(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        self.native_http_request(reqwest::Method::DELETE, args, false)
+    }
+
+    fn native_http_request(
+        &self,
+        method: reqwest::Method,
+        args: Vec<Value>,
+        with_body: bool,
+    ) -> Result<Value, RuntimeError> {
+        if args.is_empty() {
+            return Err(RuntimeError::new(format!(
+                "http.{} expects at least a URL argument",
+                method.as_str().to_lowercase()
+            )));
+        }
+
+        let url = expect_string(
+            &args[0],
+            &format!("http.{} url", method.as_str().to_lowercase()),
+        )?;
+        self.permissions.check_net(&url)?;
+
+        let mut cursor = 1;
+        let body = if with_body {
+            if args.len() < 2 {
+                return Err(RuntimeError::new(format!(
+                    "http.{} expects a request body argument",
+                    method.as_str().to_lowercase()
+                )));
+            }
+            cursor = 2;
+            Some(http_body_to_string(&args[1])?)
+        } else {
+            None
+        };
+
+        let mut headers = HashMap::new();
+        let mut timeout_ms: u64 = 30_000;
+
+        if args.len() > cursor {
+            match &args[cursor] {
+                Value::Map(_) => {
+                    headers = headers_from_value(&args[cursor])?;
+                    cursor += 1;
+                }
+                Value::Int(value) if *value > 0 => {
+                    timeout_ms = *value as u64;
+                    cursor += 1;
+                }
+                Value::Int(_) => {
+                    return Err(RuntimeError::new(format!(
+                        "http.{} timeout must be > 0 milliseconds",
+                        method.as_str().to_lowercase()
+                    )));
+                }
+                other => {
+                    return Err(RuntimeError::new(format!(
+                        "http.{} optional argument must be headers map or timeout int, got '{}'",
+                        method.as_str().to_lowercase(),
+                        other.type_name()
+                    )));
+                }
+            }
+        }
+
+        if args.len() > cursor {
+            match &args[cursor] {
+                Value::Int(value) if *value > 0 => {
+                    timeout_ms = *value as u64;
+                    cursor += 1;
+                }
+                Value::Int(_) => {
+                    return Err(RuntimeError::new(format!(
+                        "http.{} timeout must be > 0 milliseconds",
+                        method.as_str().to_lowercase()
+                    )));
+                }
+                other => {
+                    return Err(RuntimeError::new(format!(
+                        "http.{} timeout must be int milliseconds, got '{}'",
+                        method.as_str().to_lowercase(),
+                        other.type_name()
+                    )));
+                }
+            }
+        }
+
+        if args.len() != cursor {
+            return Err(RuntimeError::new(format!(
+                "http.{} received too many arguments",
+                method.as_str().to_lowercase()
+            )));
+        }
+
+        let lower_method = method.as_str().to_string();
+        let pending = PendingHttp::spawn(move || {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_millis(timeout_ms))
+                .build()
+                .map_err(|err| format!("http client init failed: {}", err))?;
+
+            let mut request = client.request(method.clone(), &url);
+            for (name, value) in &headers {
+                request = request.header(name, value);
+            }
+
+            if let Some(body) = body {
+                request = request.body(body);
+            }
+
+            let response = request.send().map_err(|err| {
+                if err.is_timeout() {
+                    format!("http.{} request timed out: {}", lower_method, err)
+                } else {
+                    format!("http.{} request failed: {}", lower_method, err)
+                }
+            })?;
+
+            let status = response.status().as_u16() as i64;
+            let final_url = response.url().to_string();
+            let mut header_values = HashMap::new();
+            for (name, value) in response.headers() {
+                let rendered = value.to_str().unwrap_or_default().to_string();
+                header_values.insert(name.to_string(), rendered);
+            }
+
+            let body = response
+                .text()
+                .map_err(|err| format!("http response body read failed: {}", err))?;
+
+            Ok(HttpResponseData {
+                status,
+                body,
+                headers: header_values,
+                url: final_url,
+            })
+        });
+        Ok(Value::HttpPending(pending))
+    }
+
+    fn resolve_http_pending(
+        &self,
+        pending: &PendingHttp,
+    ) -> Result<HttpResponseData, RuntimeError> {
+        pending.resolve().map_err(RuntimeError::new)
+    }
+
     fn native_env_get(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
         expect_arity("env.get", &args, 1)?;
         let key = expect_string(&args[0], "env.get key")?;
@@ -838,6 +1205,43 @@ impl Runtime {
             Err(std::env::VarError::NotPresent) => Ok(Value::Nil),
             Err(err) => Err(RuntimeError::new(format!("env.get failed: {}", err))),
         }
+    }
+
+    fn native_time_now_ms(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("time.now_ms", &args, 0)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|err| RuntimeError::new(format!("time.now_ms failed: {}", err)))?;
+        Ok(Value::Int(now.as_millis() as i64))
+    }
+
+    fn native_time_now_s(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("time.now_s", &args, 0)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|err| RuntimeError::new(format!("time.now_s failed: {}", err)))?;
+        Ok(Value::Int(now.as_secs() as i64))
+    }
+
+    fn native_time_sleep(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("time.sleep", &args, 1)?;
+        let Value::Int(ms) = args[0] else {
+            return Err(RuntimeError::new(format!(
+                "time.sleep milliseconds expected int, got {}",
+                args[0].type_name()
+            )));
+        };
+        if ms < 0 {
+            return Err(RuntimeError::new("time.sleep milliseconds must be >= 0"));
+        }
+        std::thread::sleep(Duration::from_millis(ms as u64));
+        Ok(Value::Nil)
+    }
+
+    fn native_crypto_sha256(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("crypto.sha256", &args, 1)?;
+        let text = expect_string(&args[0], "crypto.sha256 input")?;
+        Ok(Value::String(sha256_hex(text.as_bytes())))
     }
 
     fn native_fs_read(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -899,6 +1303,17 @@ impl Runtime {
                 .get(property)
                 .cloned()
                 .ok_or_else(|| RuntimeError::new(format!("module has no member '{}'", property))),
+            Value::HttpResponse(response) => self.read_http_member(response, property),
+            Value::HttpPending(pending) => {
+                if property == "text" || property == "json" {
+                    return Ok(Value::BoundMethod {
+                        receiver: Box::new(Value::HttpPending(pending)),
+                        method: property.to_string(),
+                    });
+                }
+                let response = self.resolve_http_pending(&pending)?;
+                self.read_http_member(response, property)
+            }
             Value::Map(values) => {
                 let existing = {
                     let borrowed = values.borrow();
@@ -930,6 +1345,32 @@ impl Runtime {
                 "type '{}' has no member '{}'",
                 other.type_name(),
                 property
+            ))),
+        }
+    }
+
+    fn read_http_member(
+        &self,
+        response: HttpResponseData,
+        property: &str,
+    ) -> Result<Value, RuntimeError> {
+        match property {
+            "status" => Ok(Value::Int(response.status)),
+            "url" => Ok(Value::String(response.url)),
+            "headers" => {
+                let mut map = HashMap::new();
+                for (name, value) in response.headers {
+                    map.insert(name, Value::String(value));
+                }
+                Ok(Value::map(map))
+            }
+            "text" | "json" => Ok(Value::BoundMethod {
+                receiver: Box::new(Value::HttpResponse(response)),
+                method: property.to_string(),
+            }),
+            other => Err(RuntimeError::new(format!(
+                "http response has no member '{}'",
+                other
             ))),
         }
     }
@@ -1019,7 +1460,9 @@ impl Runtime {
             }
             Pattern::List(patterns) => {
                 let Value::List(values) = value else {
-                    return Err(RuntimeError::new("cannot bind list pattern to non-list value"));
+                    return Err(RuntimeError::new(
+                        "cannot bind list pattern to non-list value",
+                    ));
                 };
                 let borrowed = values.borrow();
                 if borrowed.len() != patterns.len() {
@@ -1032,7 +1475,9 @@ impl Runtime {
             }
             Pattern::Map(entries) => {
                 let Value::Map(values) = value else {
-                    return Err(RuntimeError::new("cannot bind map pattern to non-map value"));
+                    return Err(RuntimeError::new(
+                        "cannot bind map pattern to non-map value",
+                    ));
                 };
                 let borrowed = values.borrow();
                 for entry in entries {
@@ -1092,6 +1537,291 @@ impl Runtime {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ImportLockEntry {
+    url: String,
+    sha256: String,
+    version: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedImport {
+    source: String,
+}
+
+fn resolve_url_import(
+    spec: &str,
+    permissions: &Permissions,
+) -> Result<ResolvedImport, RuntimeError> {
+    let (fetch_url, version) = parse_url_import_spec(spec)?;
+    let cache_root = import_cache_root();
+    let modules_dir = cache_root.join("modules");
+    fs::create_dir_all(&modules_dir).map_err(|err| {
+        RuntimeError::new(format!(
+            "failed to create import cache directory '{}': {}",
+            modules_dir.display(),
+            err
+        ))
+    })?;
+
+    let lockfile = import_lockfile_path();
+    let mut lock_entries = read_import_lockfile(&lockfile)?;
+
+    if let Some(entry) = lock_entries.get(spec) {
+        if let Some(source) = read_cached_import(&modules_dir, &entry.sha256)? {
+            return Ok(ResolvedImport { source });
+        }
+        let source = fetch_url_import_source(&fetch_url, permissions)?;
+        let fetched_hash = sha256_hex(source.as_bytes());
+        if fetched_hash != entry.sha256 {
+            return Err(RuntimeError::new(format!(
+                "lockfile hash mismatch for '{}': expected {}, got {}",
+                spec, entry.sha256, fetched_hash
+            )));
+        }
+        write_cached_import(&modules_dir, &fetched_hash, &source)?;
+        return Ok(ResolvedImport { source });
+    }
+
+    let source = fetch_url_import_source(&fetch_url, permissions)?;
+    let sha256 = sha256_hex(source.as_bytes());
+    write_cached_import(&modules_dir, &sha256, &source)?;
+
+    lock_entries.insert(
+        spec.to_string(),
+        ImportLockEntry {
+            url: fetch_url,
+            sha256,
+            version,
+        },
+    );
+    write_import_lockfile(&lockfile, &lock_entries)?;
+    Ok(ResolvedImport { source })
+}
+
+fn parse_url_import_spec(spec: &str) -> Result<(String, Option<String>), RuntimeError> {
+    let is_http = spec.starts_with("http://") || spec.starts_with("https://");
+    if !is_http {
+        return Err(RuntimeError::new(format!(
+            "URL imports must start with http:// or https://, got '{}'",
+            spec
+        )));
+    }
+
+    if let Some((base, pin)) = spec.rsplit_once('@') {
+        if !pin.is_empty() && !pin.contains('/') && !pin.contains('?') && !pin.contains('#') {
+            return Ok((base.to_string(), Some(pin.to_string())));
+        }
+    }
+    Ok((spec.to_string(), None))
+}
+
+fn fetch_url_import_source(url: &str, permissions: &Permissions) -> Result<String, RuntimeError> {
+    permissions.check_net(url)?;
+    let response = reqwest::blocking::get(url)
+        .map_err(|err| RuntimeError::new(format!("failed to fetch import '{}': {}", url, err)))?;
+    if !response.status().is_success() {
+        return Err(RuntimeError::new(format!(
+            "failed to fetch import '{}': HTTP {}",
+            url,
+            response.status()
+        )));
+    }
+    response.text().map_err(|err| {
+        RuntimeError::new(format!(
+            "failed to read response body for import '{}': {}",
+            url, err
+        ))
+    })
+}
+
+fn read_cached_import(modules_dir: &Path, sha256: &str) -> Result<Option<String>, RuntimeError> {
+    let file_path = modules_dir.join(format!("{}.rask", sha256));
+    if !file_path.exists() {
+        return Ok(None);
+    }
+    let source = fs::read_to_string(&file_path).map_err(|err| {
+        RuntimeError::new(format!(
+            "failed to read cached import '{}': {}",
+            file_path.display(),
+            err
+        ))
+    })?;
+    let actual = sha256_hex(source.as_bytes());
+    if actual != sha256 {
+        return Err(RuntimeError::new(format!(
+            "cached import hash mismatch at '{}': expected {}, got {}",
+            file_path.display(),
+            sha256,
+            actual
+        )));
+    }
+    Ok(Some(source))
+}
+
+fn write_cached_import(modules_dir: &Path, sha256: &str, source: &str) -> Result<(), RuntimeError> {
+    let file_path = modules_dir.join(format!("{}.rask", sha256));
+    fs::write(&file_path, source).map_err(|err| {
+        RuntimeError::new(format!(
+            "failed to write cached import '{}': {}",
+            file_path.display(),
+            err
+        ))
+    })
+}
+
+fn read_import_lockfile(path: &Path) -> Result<HashMap<String, ImportLockEntry>, RuntimeError> {
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let text = fs::read_to_string(path).map_err(|err| {
+        RuntimeError::new(format!(
+            "failed to read lockfile '{}': {}",
+            path.display(),
+            err
+        ))
+    })?;
+    let json: serde_json::Value = serde_json::from_str(&text).map_err(|err| {
+        RuntimeError::new(format!(
+            "failed to parse lockfile '{}': {}",
+            path.display(),
+            err
+        ))
+    })?;
+    let mut entries = HashMap::new();
+    let Some(imports) = json.get("imports").and_then(serde_json::Value::as_object) else {
+        return Ok(entries);
+    };
+
+    for (spec, entry) in imports {
+        let Some(url) = entry.get("url").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(sha256) = entry.get("sha256").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let version = entry
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string);
+        entries.insert(
+            spec.clone(),
+            ImportLockEntry {
+                url: url.to_string(),
+                sha256: sha256.to_string(),
+                version,
+            },
+        );
+    }
+
+    Ok(entries)
+}
+
+fn write_import_lockfile(
+    path: &Path,
+    entries: &HashMap<String, ImportLockEntry>,
+) -> Result<(), RuntimeError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|err| {
+        RuntimeError::new(format!(
+            "failed to create lockfile directory '{}': {}",
+            parent.display(),
+            err
+        ))
+    })?;
+
+    let mut imports = serde_json::Map::new();
+    let mut keys = entries.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    for spec in keys {
+        let entry = entries.get(&spec).expect("entry exists");
+        let mut json_entry = serde_json::Map::new();
+        json_entry.insert(
+            "url".to_string(),
+            serde_json::Value::String(entry.url.clone()),
+        );
+        json_entry.insert(
+            "sha256".to_string(),
+            serde_json::Value::String(entry.sha256.clone()),
+        );
+        if let Some(version) = &entry.version {
+            json_entry.insert(
+                "version".to_string(),
+                serde_json::Value::String(version.clone()),
+            );
+        }
+        imports.insert(spec, serde_json::Value::Object(json_entry));
+    }
+
+    let mut root = serde_json::Map::new();
+    root.insert(
+        "version".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(1)),
+    );
+    root.insert("imports".to_string(), serde_json::Value::Object(imports));
+    let encoded =
+        serde_json::to_string_pretty(&serde_json::Value::Object(root)).map_err(|err| {
+            RuntimeError::new(format!(
+                "failed to serialize lockfile '{}': {}",
+                path.display(),
+                err
+            ))
+        })?;
+    fs::write(path, encoded).map_err(|err| {
+        RuntimeError::new(format!(
+            "failed to write lockfile '{}': {}",
+            path.display(),
+            err
+        ))
+    })
+}
+
+fn import_lockfile_path() -> PathBuf {
+    if let Ok(path) = std::env::var("RASK_LOCKFILE") {
+        return PathBuf::from(path);
+    }
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".rask.lock")
+}
+
+fn import_cache_root() -> PathBuf {
+    if let Ok(path) = std::env::var("RASK_CACHE_DIR") {
+        return PathBuf::from(path);
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".rask").join("cache");
+    }
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        return PathBuf::from(home).join(".rask").join("cache");
+    }
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".rask")
+        .join("cache")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push(hex_char(byte >> 4));
+        out.push(hex_char(byte & 0x0f));
+    }
+    out
+}
+
+fn hex_char(nibble: u8) -> char {
+    match nibble {
+        0..=9 => (b'0' + nibble) as char,
+        10..=15 => (b'a' + (nibble - 10)) as char,
+        _ => unreachable!("invalid nibble"),
+    }
+}
+
 fn expect_arity(name: &str, args: &[Value], expected: usize) -> Result<(), RuntimeError> {
     if args.len() == expected {
         Ok(())
@@ -1127,6 +1857,72 @@ fn value_to_path(value: &Value, label: &str) -> Result<PathBuf, RuntimeError> {
             value.type_name()
         ))),
     }
+}
+
+fn headers_from_value(value: &Value) -> Result<HashMap<String, String>, RuntimeError> {
+    let Value::Map(entries) = value else {
+        return Err(RuntimeError::new(format!(
+            "http headers expected map, got '{}'",
+            value.type_name()
+        )));
+    };
+
+    let mut headers = HashMap::new();
+    for (key, value) in entries.borrow().iter() {
+        let rendered = match value {
+            Value::String(text) => text.clone(),
+            Value::Int(number) => number.to_string(),
+            Value::Float(number) => number.to_string(),
+            Value::Bool(boolean) => boolean.to_string(),
+            _ => {
+                return Err(RuntimeError::new(format!(
+                    "http header '{}' must be string/number/bool, got '{}'",
+                    key,
+                    value.type_name()
+                )))
+            }
+        };
+        headers.insert(key.clone(), rendered);
+    }
+    Ok(headers)
+}
+
+fn http_body_to_string(value: &Value) -> Result<String, RuntimeError> {
+    if let Value::String(text) = value {
+        return Ok(text.clone());
+    }
+    let encoded = serde_json::to_string(&value_to_json(value)?)
+        .map_err(|err| RuntimeError::new(format!("http body encode failed: {}", err)))?;
+    Ok(encoded)
+}
+
+fn normalize_allowed_net_entry(entry: &str) -> String {
+    let trimmed = entry.trim().trim_matches('/');
+    if trimmed == "*" {
+        return "*".to_string();
+    }
+
+    if let Ok(parsed) = reqwest::Url::parse(trimmed) {
+        if let Some(host) = parsed.host_str() {
+            let host = host.to_ascii_lowercase();
+            if let Some(port) = parsed.port() {
+                return format!("{}:{}", host, port);
+            }
+            return host;
+        }
+    }
+
+    let without_scheme = if let Some((_, rest)) = trimmed.split_once("://") {
+        rest
+    } else {
+        trimmed
+    };
+    let host_port = without_scheme
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    host_port
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -1262,8 +2058,8 @@ fn native_math_abs(args: Vec<Value>) -> Result<Value, RuntimeError> {
 
 fn native_math_round(args: Vec<Value>) -> Result<Value, RuntimeError> {
     expect_arity("math.round", &args, 1)?;
-    let value =
-        to_f64(&args[0]).ok_or_else(|| RuntimeError::new("math.round expected numeric argument"))?;
+    let value = to_f64(&args[0])
+        .ok_or_else(|| RuntimeError::new("math.round expected numeric argument"))?;
     Ok(Value::Int(value.round() as i64))
 }
 
@@ -1311,7 +2107,9 @@ fn json_to_value(value: serde_json::Value) -> Value {
             }
         }
         serde_json::Value::String(v) => Value::String(v),
-        serde_json::Value::Array(items) => Value::list(items.into_iter().map(json_to_value).collect()),
+        serde_json::Value::Array(items) => {
+            Value::list(items.into_iter().map(json_to_value).collect())
+        }
         serde_json::Value::Object(entries) => {
             let mut map = HashMap::new();
             for (k, v) in entries {
@@ -1350,10 +2148,32 @@ fn value_to_json(value: &Value) -> Result<serde_json::Value, RuntimeError> {
             Ok(serde_json::Value::Object(object))
         }
         Value::Error(message) => Ok(serde_json::Value::String(format!("Error({})", message))),
+        Value::HttpResponse(response) => {
+            let mut object = serde_json::Map::new();
+            object.insert(
+                "status".to_string(),
+                serde_json::Value::Number((response.status).into()),
+            );
+            object.insert(
+                "body".to_string(),
+                serde_json::Value::String(response.body.clone()),
+            );
+            object.insert(
+                "url".to_string(),
+                serde_json::Value::String(response.url.clone()),
+            );
+            let mut headers = serde_json::Map::new();
+            for (key, value) in &response.headers {
+                headers.insert(key.clone(), serde_json::Value::String(value.clone()));
+            }
+            object.insert("headers".to_string(), serde_json::Value::Object(headers));
+            Ok(serde_json::Value::Object(object))
+        }
         Value::UserFunction(_)
         | Value::NativeFunction(_)
         | Value::Module(_)
-        | Value::BoundMethod { .. } => Err(RuntimeError::new(format!(
+        | Value::BoundMethod { .. }
+        | Value::HttpPending(_) => Err(RuntimeError::new(format!(
             "json.stringify cannot encode '{}'",
             value.type_name()
         ))),

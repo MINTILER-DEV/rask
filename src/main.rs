@@ -3,7 +3,16 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
-    match parse_cli(env::args().skip(1).collect()) {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+
+    if let Some(result) = maybe_run_docs_command(&args) {
+        if let Err(err) = result {
+            eprintln!("{}", err);
+        }
+        return;
+    }
+
+    match parse_cli(args) {
         Ok((script_path, permissions)) => {
             if let Some(path) = script_path {
                 match fs::read_to_string(&path) {
@@ -18,9 +27,37 @@ fn main() {
     }
 }
 
-fn parse_cli(
-    args: Vec<String>,
-) -> Result<(Option<String>, rask::runtime::Permissions), String> {
+fn maybe_run_docs_command(args: &[String]) -> Option<Result<(), String>> {
+    if args.first().map(|arg| arg.as_str()) != Some("docs") {
+        return None;
+    }
+
+    let mut output = PathBuf::from("docs/stdlib_reference.md");
+    for arg in args.iter().skip(1) {
+        if let Some(value) = arg.strip_prefix("--out=") {
+            output = PathBuf::from(value);
+            continue;
+        }
+        return Some(Err(format!(
+            "unknown docs option '{}'; supported: --out=<path>",
+            arg
+        )));
+    }
+
+    Some(
+        rask::docgen::generate_stdlib_reference(&output)
+            .map(|report| {
+                println!(
+                    "generated stdlib docs: {} ({} module files)",
+                    report.output_path.display(),
+                    report.module_count
+                );
+            })
+            .map_err(|err| err.to_string()),
+    )
+}
+
+fn parse_cli(args: Vec<String>) -> Result<(Option<String>, rask::runtime::Permissions), String> {
     let mut script_path: Option<String> = None;
     let mut permissions = rask::runtime::Permissions::default();
 
@@ -133,4 +170,3 @@ fn run_source(source: &str, permissions: rask::runtime::Permissions) {
         Err(err) => eprintln!("{}", err),
     }
 }
-

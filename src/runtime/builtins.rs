@@ -28,6 +28,9 @@ pub fn core_globals() -> HashMap<String, Value> {
     globals.insert("json".to_string(), json_module());
     globals.insert("path".to_string(), path_module());
     globals.insert("env".to_string(), env_module());
+    globals.insert("http".to_string(), http_module());
+    globals.insert("time".to_string(), time_module());
+    globals.insert("crypto".to_string(), crypto_module());
 
     globals
 }
@@ -123,6 +126,53 @@ fn env_module() -> Value {
     entries.insert(
         "get".to_string(),
         Value::NativeFunction("env.get".to_string()),
+    );
+    Value::Module(Rc::new(entries))
+}
+
+fn http_module() -> Value {
+    let mut entries = HashMap::new();
+    entries.insert(
+        "get".to_string(),
+        Value::NativeFunction("http.get".to_string()),
+    );
+    entries.insert(
+        "post".to_string(),
+        Value::NativeFunction("http.post".to_string()),
+    );
+    entries.insert(
+        "put".to_string(),
+        Value::NativeFunction("http.put".to_string()),
+    );
+    entries.insert(
+        "delete".to_string(),
+        Value::NativeFunction("http.delete".to_string()),
+    );
+    Value::Module(Rc::new(entries))
+}
+
+fn time_module() -> Value {
+    let mut entries = HashMap::new();
+    entries.insert(
+        "now_ms".to_string(),
+        Value::NativeFunction("time.now_ms".to_string()),
+    );
+    entries.insert(
+        "now_s".to_string(),
+        Value::NativeFunction("time.now_s".to_string()),
+    );
+    entries.insert(
+        "sleep".to_string(),
+        Value::NativeFunction("time.sleep".to_string()),
+    );
+    Value::Module(Rc::new(entries))
+}
+
+fn crypto_module() -> Value {
+    let mut entries = HashMap::new();
+    entries.insert(
+        "sha256".to_string(),
+        Value::NativeFunction("crypto.sha256".to_string()),
     );
     Value::Module(Rc::new(entries))
 }

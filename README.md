@@ -25,17 +25,30 @@ Phase 3 foundations are implemented:
 - String methods: `trim`, `split`, `replace`, `uppercase`, `lowercase`
 - List methods: `push`, `pop`, `map`, `filter`, `reduce`, `sort`, `sorted`
 - Map methods: `get`, `set`, `has`, `keys`, `values`
-- Built-in modules: `math`, `fs`, `json`
+- Built-in modules: `math`, `fs`, `json`, `path`, `env`, `http`, `time`, `crypto`
 - Grapheme-aware string length/index behavior
 - `Path` runtime type and `std.path`
 
 Phase 4 started:
 - Permission model and CLI flags: `--allow-read`, `--allow-write`, `--allow-net`, `--allow-env`, `--allow-all`
-- Runtime permission checks for filesystem and environment access
+- Runtime permission checks for filesystem, environment, and network access
+- Built-in `http` module: `get/post/put/delete` with optional headers and timeout
+- HTTP response API: `.status`, `.url`, `.headers`, `.text()`, `.json()`
+- HTTP calls start immediately and resolve lazily, enabling overlap for independent requests
+
+Phase 5 foundations are implemented:
+- URL import syntax: `use "https://example.com/lib.rask@v1" as lib`
+- Import cache (content-addressed SHA-256): `$HOME/.rask/cache/modules/<sha>.rask`
+- Lockfile generation and verification: `.rask.lock`
+- Version pin metadata support via `@version` suffix in URL imports
+- Namespace isolation for URL imports (module-bound exports)
+- Stdlib organization includes `std.time` and `std.crypto`
+- Auto-generated stdlib docs from `stdlib/std/*.rask` doc comments (`rask docs`)
 
 ## Run (when Rust is installed)
 
 ```bash
 cargo test
 cargo run
+cargo run -- docs
 ```

@@ -6,7 +6,7 @@
 program      -> statement* EOF ;
 statement    -> var_decl | destructure_decl | func_def | return_stmt | print_stmt | expr_stmt ;
 statement    -> use_stmt | ... ;
-use_stmt     -> "use" IDENT ("." IDENT)* ("as" IDENT)? ;
+use_stmt     -> "use" (IDENT ("." IDENT)* | STRING) ("as" IDENT)? ;
 var_decl     -> IDENT (":" type)? "=" expression ;
 destructure_decl -> pattern "=" expression ;
 func_def     -> "def" IDENT "(" params? ")" ("->" type)? block ;
@@ -50,6 +50,19 @@ generic_args -> "<" type ("," type)* ">" ;
 
 - `--allow-read=<path1,path2,...>`
 - `--allow-write=<path1,path2,...>`
-- `--allow-net=<domain1,domain2,...>` (reserved for HTTP module work)
+- `--allow-net=<domain1,domain2,...>`
 - `--allow-env`
 - `--allow-all`
+
+## URL Imports (Phase 5 Start)
+
+- Syntax: `use "https://example.com/lib.rask@v1" as lib`
+- First import fetches remote source and writes:
+  - cache: `$HOME/.rask/cache/modules/<sha256>.rask` (or `RASK_CACHE_DIR`)
+  - lockfile: `.rask.lock` in current directory (or `RASK_LOCKFILE`)
+- Subsequent imports verify cached content hash against `.rask.lock`
+
+## Doc Generation
+
+- `rask docs` generates `docs/stdlib_reference.md` from top-of-file comments in `stdlib/std/*.rask`
+- Optional output override: `rask docs --out=path/to/file.md`

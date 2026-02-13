@@ -22,8 +22,7 @@ fn lexes_float_and_comparison() {
 
 #[test]
 fn lexes_string_with_interpolation_flag() {
-    let tokens =
-        rask::lexer::lex("message = \"Hello, {name}!\"").expect("lex should succeed");
+    let tokens = rask::lexer::lex("message = \"Hello, {name}!\"").expect("lex should succeed");
     match &tokens[2].kind {
         TokenKind::String {
             value,
