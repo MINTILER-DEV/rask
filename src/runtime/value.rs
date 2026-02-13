@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::parser::ast::Stmt;
@@ -19,6 +20,7 @@ pub enum Value {
     String(String),
     Bool(bool),
     Nil,
+    Path(PathBuf),
     List(Rc<RefCell<Vec<Value>>>),
     Map(Rc<RefCell<HashMap<String, Value>>>),
     UserFunction(UserFunction),
@@ -39,6 +41,7 @@ impl PartialEq for Value {
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Nil, Value::Nil) => true,
+            (Value::Path(a), Value::Path(b)) => a == b,
             (Value::Error(a), Value::Error(b)) => a == b,
             (Value::List(a), Value::List(b)) => *a.borrow() == *b.borrow(),
             (Value::Map(a), Value::Map(b)) => *a.borrow() == *b.borrow(),
@@ -63,6 +66,7 @@ impl Value {
             Value::Int(value) => *value != 0,
             Value::Float(value) => *value != 0.0,
             Value::String(value) => !value.is_empty(),
+            Value::Path(value) => !value.as_os_str().is_empty(),
             Value::List(values) => !values.borrow().is_empty(),
             Value::Map(values) => !values.borrow().is_empty(),
             Value::Error(_) => false,
@@ -80,6 +84,7 @@ impl Value {
             Value::String(_) => "string",
             Value::Bool(_) => "bool",
             Value::Nil => "nil",
+            Value::Path(_) => "path",
             Value::List(_) => "list",
             Value::Map(_) => "map",
             Value::UserFunction(_) => "function",
@@ -99,6 +104,7 @@ impl fmt::Display for Value {
             Value::String(value) => write!(f, "{}", value),
             Value::Bool(value) => write!(f, "{}", value),
             Value::Nil => write!(f, "nil"),
+            Value::Path(value) => write!(f, "{}", value.display()),
             Value::List(values) => {
                 let rendered = values
                     .borrow()
@@ -125,4 +131,3 @@ impl fmt::Display for Value {
         }
     }
 }
-

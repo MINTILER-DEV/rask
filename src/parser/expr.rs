@@ -285,14 +285,42 @@ impl Parser {
 
     fn list_literal(&mut self) -> Result<Expr, ParseError> {
         self.consume_symbol(TokenKind::LeftBracket, "expected '['")?;
-        let mut items = Vec::new();
-        if !self.check_kind(&TokenKind::RightBracket) {
-            loop {
-                items.push(self.expression()?);
-                if !self.matches_symbol(TokenKind::Comma) {
-                    break;
-                }
+        if self.check_kind(&TokenKind::RightBracket) {
+            self.consume_symbol(TokenKind::RightBracket, "expected ']' after list literal")?;
+            return Ok(Expr::ListLiteral(Vec::new()));
+        }
+
+        let first_expr = self.expression()?;
+        if self.matches_keyword(TokenKind::For) {
+            let item_name =
+                self.consume_identifier("expected item variable after 'for' in comprehension")?;
+            if !self.matches_identifier_literal("in") {
+                return Err(ParseError::new(
+                    "expected 'in' in list comprehension",
+                    self.peek(),
+                ));
             }
+            let iterable = self.expression()?;
+            let condition = if self.matches_keyword(TokenKind::If) {
+                Some(Box::new(self.expression()?))
+            } else {
+                None
+            };
+            self.consume_symbol(TokenKind::RightBracket, "expected ']' after list comprehension")?;
+            return Ok(Expr::ListComprehension {
+                expr: Box::new(first_expr),
+                item_name,
+                iterable: Box::new(iterable),
+                condition,
+            });
+        }
+
+        let mut items = vec![first_expr];
+        while self.matches_symbol(TokenKind::Comma) {
+            if self.check_kind(&TokenKind::RightBracket) {
+                break;
+            }
+            items.push(self.expression()?);
         }
         self.consume_symbol(TokenKind::RightBracket, "expected ']' after list literal")?;
         Ok(Expr::ListLiteral(items))

@@ -1,2 +1,10 @@
-# Placeholder std.math module
+# std.math (reference module)
+#
+# Current engine exposes:
+# - math.pi
+# - math.e
+# - math.min(a, b)
+# - math.max(a, b)
+# - math.abs(x)
+# - math.round(x)
 

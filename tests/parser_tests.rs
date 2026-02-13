@@ -170,3 +170,17 @@ fn parses_list_map_literals_and_index() {
         _ => panic!("expected var declaration"),
     }
 }
+
+#[test]
+fn parses_list_comprehension() {
+    let statements = parse("items = [x * 2 for x in nums if x > 1]");
+    match &statements[0] {
+        Stmt::VarDecl { initializer, .. } => match initializer {
+            Expr::ListComprehension { item_name, .. } => {
+                assert_eq!(item_name, "x");
+            }
+            _ => panic!("expected list comprehension"),
+        },
+        _ => panic!("expected var declaration"),
+    }
+}

@@ -93,6 +93,18 @@ impl TypeChecker {
         global.insert("math".to_string(), Type::Unknown);
         global.insert("fs".to_string(), Type::Unknown);
         global.insert("json".to_string(), Type::Unknown);
+        global.insert("path".to_string(), Type::Unknown);
+        global.insert("env".to_string(), Type::Unknown);
+        global.insert(
+            "Path".to_string(),
+            Type::Function {
+                params: vec![Type::Unknown],
+                ret: Box::new(Type::Named {
+                    name: "Path".to_string(),
+                    args: vec![],
+                }),
+            },
+        );
         Self {
             scopes: vec![global],
             function_stack: Vec::new(),
@@ -371,6 +383,42 @@ impl TypeChecker {
                     }
                     Type::List(Box::new(Type::Union(types).normalize()))
                 }
+            }
+            Expr::ListComprehension {
+                expr,
+                item_name,
+                iterable,
+                condition,
+            } => {
+                let iterable_type = self.infer_expr(iterable, errors);
+                let item_type = match iterable_type {
+                    Type::List(inner) => (*inner).clone(),
+                    Type::Unknown => Type::Unknown,
+                    other => {
+                        errors.push(TypeError::new(format!(
+                            "list comprehension requires list iterable, found '{}'",
+                            other
+                        )));
+                        Type::Unknown
+                    }
+                };
+
+                self.push_scope();
+                self.define(item_name.clone(), item_type);
+                if let Some(condition_expr) = condition {
+                    let condition_type = self.infer_expr(condition_expr, errors);
+                    if !is_assignable(&condition_type, &Type::Bool)
+                        && !matches!(condition_type, Type::Unknown)
+                    {
+                        errors.push(TypeError::new(format!(
+                            "list comprehension condition must be bool, got '{}'",
+                            condition_type
+                        )));
+                    }
+                }
+                let body_type = self.infer_expr(expr, errors);
+                self.pop_scope();
+                Type::List(Box::new(body_type))
             }
             Expr::MapLiteral(entries) => {
                 if entries.is_empty() {

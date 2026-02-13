@@ -101,3 +101,12 @@ fn detects_match_pattern_type_mismatch() {
         errors
     );
 }
+
+#[test]
+fn infers_list_comprehension_type() {
+    let output = check("nums = [1,2,3]\ndoubled = [x * 2 for x in nums]").expect("typecheck ok");
+    assert_eq!(
+        output.inferred_types.get("doubled"),
+        Some(&Type::List(Box::new(Type::Int)))
+    );
+}

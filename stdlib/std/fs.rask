@@ -1,2 +1,10 @@
-# Placeholder std.fs module
+# std.fs (reference module)
+#
+# Current engine exposes these operations natively:
+# - fs.read(path)
+# - fs.write(path, content)
+# - fs.exists(path)
+# - fs.delete(path)
+#
+# This file is a canonical source layout target for future stdlib loading.
 

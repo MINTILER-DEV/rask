@@ -4,12 +4,76 @@ pub mod value;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use crate::parser::ast::{
     BinaryOp, Expr, MapEntryExpr, MatchArm, Pattern, Program, Stmt, UnaryOp,
 };
 
 use self::value::{UserFunction, Value};
+use unicode_segmentation::UnicodeSegmentation;
+
+#[derive(Debug, Clone, Default)]
+pub struct Permissions {
+    pub allow_all: bool,
+    pub allow_read: Vec<PathBuf>,
+    pub allow_write: Vec<PathBuf>,
+    pub allow_net: Vec<String>,
+    pub allow_env: bool,
+}
+
+impl Permissions {
+    pub fn allow_all() -> Self {
+        Self {
+            allow_all: true,
+            allow_read: Vec::new(),
+            allow_write: Vec::new(),
+            allow_net: Vec::new(),
+            allow_env: true,
+        }
+    }
+
+    pub fn check_read(&self, path: &Path) -> Result<(), RuntimeError> {
+        if self.allow_all || self.is_allowed(path, &self.allow_read) {
+            Ok(())
+        } else {
+            Err(RuntimeError::new(format!(
+                "read access denied for '{}'; pass --allow-read=<path> or --allow-all",
+                path.display()
+            )))
+        }
+    }
+
+    pub fn check_write(&self, path: &Path) -> Result<(), RuntimeError> {
+        if self.allow_all || self.is_allowed(path, &self.allow_write) {
+            Ok(())
+        } else {
+            Err(RuntimeError::new(format!(
+                "write access denied for '{}'; pass --allow-write=<path> or --allow-all",
+                path.display()
+            )))
+        }
+    }
+
+    pub fn check_env(&self, key: &str) -> Result<(), RuntimeError> {
+        if self.allow_all || self.allow_env {
+            Ok(())
+        } else {
+            Err(RuntimeError::new(format!(
+                "environment access denied for '{}'; pass --allow-env or --allow-all",
+                key
+            )))
+        }
+    }
+
+    fn is_allowed(&self, path: &Path, allowed_roots: &[PathBuf]) -> bool {
+        if allowed_roots.is_empty() {
+            return false;
+        }
+        let normalized_path = normalize_path(path);
+        allowed_roots.iter().any(|root| normalized_path.starts_with(root))
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RuntimeError {
@@ -41,13 +105,19 @@ enum StmtFlow {
 pub struct Runtime {
     scopes: Vec<HashMap<String, Value>>,
     pending_return: Option<Value>,
+    permissions: Permissions,
 }
 
 impl Runtime {
     pub fn new() -> Self {
+        Self::with_permissions(Permissions::default())
+    }
+
+    pub fn with_permissions(permissions: Permissions) -> Self {
         Self {
             scopes: vec![builtins::core_globals()],
             pending_return: None,
+            permissions,
         }
     }
 
@@ -248,6 +318,44 @@ impl Runtime {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Value::list(values))
             }
+            Expr::ListComprehension {
+                expr,
+                item_name,
+                iterable,
+                condition,
+            } => {
+                let iterable_value = self.eval_expr(iterable)?;
+                let items = match iterable_value {
+                    Value::List(values) => values.borrow().clone(),
+                    Value::String(text) => UnicodeSegmentation::graphemes(text.as_str(), true)
+                        .map(|g| Value::String(g.to_string()))
+                        .collect::<Vec<_>>(),
+                    other => {
+                        return Err(RuntimeError::new(format!(
+                            "list comprehension requires list or string iterable, found '{}'",
+                            other.type_name()
+                        )))
+                    }
+                };
+
+                let mut result = Vec::new();
+                self.push_scope();
+                for item in items {
+                    self.define(item_name.clone(), item);
+                    if let Some(condition_expr) = condition {
+                        let keep = self.eval_expr(condition_expr)?;
+                        if !keep.is_truthy() {
+                            continue;
+                        }
+                    }
+                    result.push(self.eval_expr(expr)?);
+                    if self.pending_return.is_some() {
+                        break;
+                    }
+                }
+                self.pop_scope();
+                Ok(Value::list(result))
+            }
             Expr::MapLiteral(entries) => self.eval_map_literal(entries),
             Expr::Index { object, index } => {
                 let object_value = self.eval_expr(object)?;
@@ -329,10 +437,9 @@ impl Runtime {
                 if index < 0 {
                     return Ok(Value::Nil);
                 }
-                Ok(text
-                    .chars()
+                Ok(UnicodeSegmentation::graphemes(text.as_str(), true)
                     .nth(index as usize)
-                    .map(|c| Value::String(c.to_string()))
+                    .map(|g| Value::String(g.to_string()))
                     .unwrap_or(Value::Nil))
             }
             (object, index) => Err(RuntimeError::new(format!(
@@ -398,10 +505,16 @@ impl Runtime {
         match name {
             "core.list" => Ok(Value::list(args)),
             "core.map" => self.native_map_constructor(args),
+            "core.Path" => self.native_path_constructor(args),
             "core.len" => {
                 expect_arity(name, &args, 1)?;
                 match &args[0] {
-                    Value::String(text) => Ok(Value::Int(text.chars().count() as i64)),
+                    Value::String(text) => Ok(Value::Int(
+                        UnicodeSegmentation::graphemes(text.as_str(), true).count() as i64,
+                    )),
+                    Value::Path(path) => Ok(Value::Int(
+                        path.as_os_str().to_string_lossy().chars().count() as i64,
+                    )),
                     Value::List(values) => Ok(Value::Int(values.borrow().len() as i64)),
                     Value::Map(values) => Ok(Value::Int(values.borrow().len() as i64)),
                     other => Err(RuntimeError::new(format!(
@@ -414,12 +527,19 @@ impl Runtime {
             "math.max" => native_math_max(args),
             "math.abs" => native_math_abs(args),
             "math.round" => native_math_round(args),
-            "fs.read" => native_fs_read(args),
-            "fs.write" => native_fs_write(args),
-            "fs.exists" => native_fs_exists(args),
-            "fs.delete" => native_fs_delete(args),
+            "fs.read" => self.native_fs_read(args),
+            "fs.write" => self.native_fs_write(args),
+            "fs.exists" => self.native_fs_exists(args),
+            "fs.delete" => self.native_fs_delete(args),
             "json.parse" => native_json_parse(args),
             "json.stringify" => native_json_stringify(args),
+            "path.join" => self.native_path_join(args),
+            "path.normalize" => self.native_path_normalize(args),
+            "path.basename" => self.native_path_basename(args),
+            "path.dirname" => self.native_path_dirname(args),
+            "path.cwd" => self.native_path_cwd(args),
+            "path.to_string" => self.native_path_to_string(args),
+            "env.get" => self.native_env_get(args),
             other => Err(RuntimeError::new(format!(
                 "unknown native function '{}'",
                 other
@@ -437,6 +557,7 @@ impl Runtime {
             Value::String(text) => self.call_string_method(text, method, args),
             Value::List(values) => self.call_list_method(values, method, args),
             Value::Map(values) => self.call_map_method(values, method, args),
+            Value::Path(path) => self.call_path_method(path, method, args),
             other => Err(RuntimeError::new(format!(
                 "type '{}' has no methods",
                 other.type_name()
@@ -595,6 +716,48 @@ impl Runtime {
         }
     }
 
+    fn call_path_method(
+        &mut self,
+        path: PathBuf,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "join" => {
+                if args.is_empty() {
+                    return Err(RuntimeError::new("path.join expects at least 1 argument"));
+                }
+                let mut out = path;
+                for value in args {
+                    out = out.join(value_to_path(&value, "path.join segment")?);
+                }
+                Ok(Value::Path(normalize_path(&out)))
+            }
+            "normalize" => {
+                expect_arity("path.normalize", &args, 0)?;
+                Ok(Value::Path(normalize_path(&path)))
+            }
+            "basename" => {
+                expect_arity("path.basename", &args, 0)?;
+                let name = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                Ok(Value::String(name))
+            }
+            "dirname" => {
+                expect_arity("path.dirname", &args, 0)?;
+                let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+                Ok(Value::Path(parent))
+            }
+            "to_string" => {
+                expect_arity("path.to_string", &args, 0)?;
+                Ok(Value::String(path.to_string_lossy().to_string()))
+            }
+            other => Err(RuntimeError::new(format!("unknown path method '{}'", other))),
+        }
+    }
+
     fn native_map_constructor(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
         if args.len() % 2 != 0 {
             return Err(RuntimeError::new(
@@ -609,6 +772,116 @@ impl Runtime {
             index += 2;
         }
         Ok(Value::map(map))
+    }
+
+    fn native_path_constructor(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("Path", &args, 1)?;
+        let path = value_to_path(&args[0], "Path argument")?;
+        Ok(Value::Path(normalize_path(&path)))
+    }
+
+    fn native_path_join(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        if args.len() < 2 {
+            return Err(RuntimeError::new(
+                "path.join expects at least 2 arguments: base, segment...",
+            ));
+        }
+        let mut base = value_to_path(&args[0], "path.join base")?;
+        for value in args.iter().skip(1) {
+            base = base.join(value_to_path(value, "path.join segment")?);
+        }
+        Ok(Value::Path(normalize_path(&base)))
+    }
+
+    fn native_path_normalize(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("path.normalize", &args, 1)?;
+        let path = value_to_path(&args[0], "path.normalize path")?;
+        Ok(Value::Path(normalize_path(&path)))
+    }
+
+    fn native_path_basename(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("path.basename", &args, 1)?;
+        let path = value_to_path(&args[0], "path.basename path")?;
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        Ok(Value::String(name))
+    }
+
+    fn native_path_dirname(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("path.dirname", &args, 1)?;
+        let path = value_to_path(&args[0], "path.dirname path")?;
+        let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        Ok(Value::Path(parent))
+    }
+
+    fn native_path_cwd(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("path.cwd", &args, 0)?;
+        let cwd = std::env::current_dir()
+            .map_err(|err| RuntimeError::new(format!("path.cwd failed: {}", err)))?;
+        Ok(Value::Path(cwd))
+    }
+
+    fn native_path_to_string(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("path.to_string", &args, 1)?;
+        let path = value_to_path(&args[0], "path.to_string path")?;
+        Ok(Value::String(path.to_string_lossy().to_string()))
+    }
+
+    fn native_env_get(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("env.get", &args, 1)?;
+        let key = expect_string(&args[0], "env.get key")?;
+        self.permissions.check_env(&key)?;
+        match std::env::var(&key) {
+            Ok(value) => Ok(Value::String(value)),
+            Err(std::env::VarError::NotPresent) => Ok(Value::Nil),
+            Err(err) => Err(RuntimeError::new(format!("env.get failed: {}", err))),
+        }
+    }
+
+    fn native_fs_read(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("fs.read", &args, 1)?;
+        let path = value_to_path(&args[0], "fs.read path")?;
+        self.permissions.check_read(&path)?;
+        std::fs::read_to_string(&path)
+            .map(Value::String)
+            .map_err(|err| RuntimeError::new(format!("fs.read failed: {}", err)))
+    }
+
+    fn native_fs_write(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("fs.write", &args, 2)?;
+        let path = value_to_path(&args[0], "fs.write path")?;
+        let content = expect_string(&args[1], "fs.write content")?;
+        self.permissions.check_write(&path)?;
+        std::fs::write(&path, content)
+            .map(|_| Value::Nil)
+            .map_err(|err| RuntimeError::new(format!("fs.write failed: {}", err)))
+    }
+
+    fn native_fs_exists(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("fs.exists", &args, 1)?;
+        let path = value_to_path(&args[0], "fs.exists path")?;
+        self.permissions.check_read(&path)?;
+        Ok(Value::Bool(path.exists()))
+    }
+
+    fn native_fs_delete(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("fs.delete", &args, 1)?;
+        let path = value_to_path(&args[0], "fs.delete path")?;
+        self.permissions.check_write(&path)?;
+        if !path.exists() {
+            return Ok(Value::Nil);
+        }
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+                .map(|_| Value::Nil)
+                .map_err(|err| RuntimeError::new(format!("fs.delete failed: {}", err)))
+        } else {
+            std::fs::remove_file(&path)
+                .map(|_| Value::Nil)
+                .map_err(|err| RuntimeError::new(format!("fs.delete failed: {}", err)))
+        }
     }
 
     fn read_member(
@@ -646,6 +919,10 @@ impl Runtime {
             }),
             Value::List(values) => Ok(Value::BoundMethod {
                 receiver: Box::new(Value::List(values)),
+                method: property.to_string(),
+            }),
+            Value::Path(path) => Ok(Value::BoundMethod {
+                receiver: Box::new(Value::Path(path)),
                 method: property.to_string(),
             }),
             Value::Nil if optional => Ok(Value::Nil),
@@ -840,6 +1117,40 @@ fn expect_string(value: &Value, label: &str) -> Result<String, RuntimeError> {
     }
 }
 
+fn value_to_path(value: &Value, label: &str) -> Result<PathBuf, RuntimeError> {
+    match value {
+        Value::String(text) => Ok(PathBuf::from(text)),
+        Value::Path(path) => Ok(path.clone()),
+        _ => Err(RuntimeError::new(format!(
+            "{} expected string/path, got {}",
+            label,
+            value.type_name()
+        ))),
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let input = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+
+    let mut normalized = PathBuf::new();
+    for component in input.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
 fn to_f64(value: &Value) -> Option<f64> {
     match value {
         Value::Int(v) => Some(*v as f64),
@@ -956,47 +1267,6 @@ fn native_math_round(args: Vec<Value>) -> Result<Value, RuntimeError> {
     Ok(Value::Int(value.round() as i64))
 }
 
-fn native_fs_read(args: Vec<Value>) -> Result<Value, RuntimeError> {
-    expect_arity("fs.read", &args, 1)?;
-    let path = expect_string(&args[0], "fs.read path")?;
-    std::fs::read_to_string(&path)
-        .map(Value::String)
-        .map_err(|err| RuntimeError::new(format!("fs.read failed: {}", err)))
-}
-
-fn native_fs_write(args: Vec<Value>) -> Result<Value, RuntimeError> {
-    expect_arity("fs.write", &args, 2)?;
-    let path = expect_string(&args[0], "fs.write path")?;
-    let content = expect_string(&args[1], "fs.write content")?;
-    std::fs::write(&path, content)
-        .map(|_| Value::Nil)
-        .map_err(|err| RuntimeError::new(format!("fs.write failed: {}", err)))
-}
-
-fn native_fs_exists(args: Vec<Value>) -> Result<Value, RuntimeError> {
-    expect_arity("fs.exists", &args, 1)?;
-    let path = expect_string(&args[0], "fs.exists path")?;
-    Ok(Value::Bool(std::path::Path::new(&path).exists()))
-}
-
-fn native_fs_delete(args: Vec<Value>) -> Result<Value, RuntimeError> {
-    expect_arity("fs.delete", &args, 1)?;
-    let path = expect_string(&args[0], "fs.delete path")?;
-    let path_ref = std::path::Path::new(&path);
-    if !path_ref.exists() {
-        return Ok(Value::Nil);
-    }
-    if path_ref.is_dir() {
-        std::fs::remove_dir_all(path_ref)
-            .map(|_| Value::Nil)
-            .map_err(|err| RuntimeError::new(format!("fs.delete failed: {}", err)))
-    } else {
-        std::fs::remove_file(path_ref)
-            .map(|_| Value::Nil)
-            .map_err(|err| RuntimeError::new(format!("fs.delete failed: {}", err)))
-    }
-}
-
 fn native_json_parse(args: Vec<Value>) -> Result<Value, RuntimeError> {
     expect_arity("json.parse", &args, 1)?;
     let text = expect_string(&args[0], "json.parse input")?;
@@ -1063,6 +1333,7 @@ fn value_to_json(value: &Value) -> Result<serde_json::Value, RuntimeError> {
             Ok(serde_json::Value::Number(number))
         }
         Value::String(v) => Ok(serde_json::Value::String(v.clone())),
+        Value::Path(v) => Ok(serde_json::Value::String(v.to_string_lossy().to_string())),
         Value::List(values) => {
             let converted = values
                 .borrow()

@@ -87,6 +87,12 @@ pub enum Expr {
         arms: Vec<MatchArm>,
     },
     ListLiteral(Vec<Expr>),
+    ListComprehension {
+        expr: Box<Expr>,
+        item_name: String,
+        iterable: Box<Expr>,
+        condition: Option<Box<Expr>>,
+    },
     MapLiteral(Vec<MapEntryExpr>),
     Index {
         object: Box<Expr>,

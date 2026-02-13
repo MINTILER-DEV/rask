@@ -1,0 +1,11 @@
+# std.path (reference module)
+#
+# Current engine exposes:
+# - path.join(base, segment...)
+# - path.normalize(path)
+# - path.basename(path)
+# - path.dirname(path)
+# - path.cwd()
+# - path.to_string(path)
+# - Path("...") constructor
+

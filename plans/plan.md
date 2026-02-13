@@ -137,18 +137,18 @@
 **Goal**: Scripts are sandboxed by default, Deno-style permissions
 
 #### Week 13-14: Permission System
-- [ ] Design permission model
+- [x] Design permission model
   - `--allow-read=<path>`
   - `--allow-write=<path>`
   - `--allow-net=<domain>`
   - `--allow-env`
   - `--allow-all` (for trusted scripts)
-- [ ] Runtime permission checking
+- [x] Runtime permission checking (fs/env implemented, net hooks added)
   - Check before fs operations
   - Check before network operations
   - Check before env access
 - [ ] Permission prompts (optional interactive mode)
-- [ ] Graceful error messages when denied
+- [x] Graceful error messages when denied
 
 #### Week 15-16: HTTP Client
 - [ ] Built-in HTTP module

@@ -1,2 +1,8 @@
-# Placeholder std.http module
+# std.http (planned)
+#
+# Reserved module namespace for Phase 4 HTTP client work.
+# Target API:
+# - http.get(url)
+# - http.post(url, body)
+# - response.status / response.text() / response.json()
 

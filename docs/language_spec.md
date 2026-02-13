@@ -1,6 +1,6 @@
 # Rask Language Specification (Draft)
 
-## Phase 1-2 Grammar
+## Phase 1-4 Grammar
 
 ```text
 program      -> statement* EOF ;
@@ -28,7 +28,8 @@ unary        -> ("!" | "-") unary | postfix ;
 postfix      -> primary ( "(" arguments? ")" | "." IDENT | "?." IDENT | "[" expression "]" | "!" )* ;
 primary      -> NUMBER | STRING | "true" | "false" | "nil"
              | IDENT | "(" expression ")" | match_expr | list_literal | map_literal ;
-list_literal -> "[" (expression ("," expression)*)? "]" ;
+list_literal -> "[" (expression ("," expression)*)? "]"
+             | "[" expression "for" IDENT "in" expression ("if" expression)? "]" ;
 map_literal  -> "{" ((IDENT | STRING) ":" expression ("," (IDENT | STRING) ":" expression)*)? "}" ;
 match_expr   -> "match" expression "{" match_arm* "}" ;
 match_arm    -> pattern "=>" expression ("," | ";" | NEWLINE)* ;
@@ -44,3 +45,11 @@ primary_type -> IDENT generic_args?
              | "(" type ")" ;
 generic_args -> "<" type ("," type)* ">" ;
 ```
+
+## Runtime Flags
+
+- `--allow-read=<path1,path2,...>`
+- `--allow-write=<path1,path2,...>`
+- `--allow-net=<domain1,domain2,...>` (reserved for HTTP module work)
+- `--allow-env`
+- `--allow-all`

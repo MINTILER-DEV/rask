@@ -1,2 +1,8 @@
-# Placeholder std.json module
+# std.json (reference module)
+#
+# Current engine exposes:
+# - json.parse(text)
+# - json.stringify(value, pretty?)
+#
+# Future module loader will map this file to `use std.json`.
 
