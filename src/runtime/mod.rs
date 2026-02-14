@@ -8,7 +8,6 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-#[cfg(feature = "net")]
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -608,7 +607,13 @@ impl Runtime {
     fn execute_use(&mut self, target: &UseTarget, alias: Option<&str>) -> Result<(), RuntimeError> {
         match target {
             UseTarget::ModulePath(path) => self.execute_module_use(path, alias),
-            UseTarget::Url(spec) => self.execute_url_use(spec, alias),
+            UseTarget::Url(spec) => {
+                if is_http_import_spec(spec) {
+                    self.execute_url_use(spec, alias)
+                } else {
+                    self.execute_file_use(spec, alias)
+                }
+            }
         }
     }
 
@@ -696,7 +701,63 @@ impl Runtime {
         }
     }
 
-    #[cfg(feature = "net")]
+    fn execute_file_use(&mut self, spec: &str, alias: Option<&str>) -> Result<(), RuntimeError> {
+        let resolved_path = self.resolve_file_import_path(spec);
+        self.permissions.check_read(&resolved_path)?;
+
+        let source = std::fs::read_to_string(&resolved_path).map_err(|err| {
+            RuntimeError::new(format!(
+                "failed to read imported module '{}': {}",
+                resolved_path.display(),
+                err
+            ))
+        })?;
+        let origin = resolved_path.display().to_string();
+
+        let mut module_runtime = Runtime::with_permissions(self.permissions.clone())
+            .with_implicit_nil_for_unknown_variables(self.implicit_nil_for_unknown_variables)
+            .with_source_label(origin.clone());
+        #[cfg(feature = "net")]
+        {
+            module_runtime.import_stack = self.import_stack.clone();
+            module_runtime.loaded_url_modules = self.loaded_url_modules.clone();
+        }
+        let module = module_runtime.evaluate_imported_module(&source, &origin)?;
+
+        let bind_name = alias
+            .map(ToString::to_string)
+            .unwrap_or_else(|| UseTarget::Url(spec.to_string()).default_binding_name());
+        self.define(bind_name, module);
+        Ok(())
+    }
+
+    fn resolve_file_import_path(&self, spec: &str) -> PathBuf {
+        let candidate = PathBuf::from(spec);
+        if candidate.is_absolute() {
+            return normalize_path(&candidate);
+        }
+
+        let base_dir = if self.source_label.starts_with('<') {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        } else {
+            let source_path = PathBuf::from(&self.source_label);
+            if source_path.is_absolute() {
+                source_path
+                    .parent()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("."))
+            } else {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                match source_path.parent() {
+                    Some(parent) if !parent.as_os_str().is_empty() => cwd.join(parent),
+                    _ => cwd,
+                }
+            }
+        };
+
+        normalize_path(&base_dir.join(candidate))
+    }
+
     fn evaluate_imported_module(
         &mut self,
         source: &str,
@@ -895,6 +956,14 @@ impl Runtime {
                 let object_value = self.eval_expr(object)?;
                 let index_value = self.eval_expr(index)?;
                 self.eval_index(object_value, index_value)
+            }
+            Expr::Function { params, body, .. } => {
+                let params = params.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+                Ok(Value::UserFunction(UserFunction {
+                    name: "<anonymous>".to_string(),
+                    params,
+                    body: body.clone(),
+                }))
             }
         }
     }
@@ -2669,6 +2738,11 @@ fn normalize_allowed_net_entry(entry: &str) -> String {
         return host;
     }
     trimmed.to_ascii_lowercase()
+}
+
+fn is_http_import_spec(spec: &str) -> bool {
+    let lowered = spec.trim().to_ascii_lowercase();
+    lowered.starts_with("http://") || lowered.starts_with("https://")
 }
 
 fn prompt_permission(access_kind: &str, target: &str) -> bool {

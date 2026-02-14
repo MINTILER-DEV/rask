@@ -145,6 +145,12 @@ fn evaluates_string_and_list_methods() {
 }
 
 #[test]
+fn evaluates_inline_function_expression() {
+    let value = run("adder = def(x, y) { return x + y }\nadder(2, 3)");
+    assert_eq!(value, Value::Int(5));
+}
+
+#[test]
 fn implicit_nil_treats_unknown_variables_as_nil() {
     let value = run_with_implicit_nil("[missing or 5, missing?.name or \"none\"]");
     assert_eq!(
@@ -188,6 +194,24 @@ fn evaluates_json_roundtrip() {
 fn evaluates_use_alias_for_module() {
     let value = run("use std.math as m\nm.max(2, 5)");
     assert_eq!(value, Value::Float(5.0));
+}
+
+#[test]
+fn evaluates_local_string_import() {
+    let mut module_path = std::env::temp_dir();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be valid")
+        .as_nanos();
+    module_path.push(format!("scalf_local_import_{}.scl", stamp));
+    std::fs::write(&module_path, "value = 123\n").expect("module file should be written");
+    let escaped_path = module_path.to_string_lossy().replace('\\', "\\\\");
+
+    let script = format!("use \"{}\" as local\nlocal.value", escaped_path);
+    let value = run(&script);
+    assert_eq!(value, Value::Int(123));
+
+    let _ = std::fs::remove_file(module_path);
 }
 
 #[test]

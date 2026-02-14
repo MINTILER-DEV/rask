@@ -1,6 +1,6 @@
 use crate::lexer::token::TokenKind;
 
-use super::ast::{BinaryOp, Expr, MapEntryExpr, MatchArm, UnaryOp};
+use super::ast::{BinaryOp, Expr, MapEntryExpr, MatchArm, Param, UnaryOp};
 use super::{ParseError, Parser};
 
 impl Parser {
@@ -203,7 +203,7 @@ impl Parser {
             }
 
             if self.matches_symbol(TokenKind::Dot) {
-                let property = self.consume_identifier("expected property name after '.'")?;
+                let property = self.consume_property_name("expected property name after '.'")?;
                 expr = Expr::Member {
                     object: Box::new(expr),
                     property,
@@ -214,7 +214,7 @@ impl Parser {
 
             if self.matches_symbol(TokenKind::Question) {
                 self.consume_symbol(TokenKind::Dot, "expected '.' after '?' in optional chain")?;
-                let property = self.consume_identifier("expected property name after '?.'")?;
+                let property = self.consume_property_name("expected property name after '?.'")?;
                 expr = Expr::Member {
                     object: Box::new(expr),
                     property,
@@ -283,6 +283,7 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Variable(name))
             }
+            TokenKind::Def => self.function_expression(),
             TokenKind::LeftParen => {
                 self.advance();
                 let expr = self.expression()?;
@@ -294,6 +295,55 @@ impl Parser {
             TokenKind::Match => self.match_expression(),
             _ => Err(ParseError::new("expected expression", self.peek())),
         }
+    }
+
+    fn function_expression(&mut self) -> Result<Expr, ParseError> {
+        self.consume_symbol(TokenKind::Def, "expected 'def'")?;
+        self.consume_symbol(
+            TokenKind::LeftParen,
+            "expected '(' after 'def' in function expression",
+        )?;
+
+        let mut params = Vec::new();
+        if !self.check_kind(&TokenKind::RightParen) {
+            loop {
+                let param_name = self.consume_identifier("expected parameter name")?;
+                let type_annotation = if self.matches_symbol(TokenKind::Colon) {
+                    Some(self.collect_type_annotation_until(
+                        |kind| matches!(kind, TokenKind::Comma | TokenKind::RightParen),
+                        "expected parameter type annotation after ':'",
+                    )?)
+                } else {
+                    None
+                };
+                params.push(Param {
+                    name: param_name,
+                    type_annotation,
+                });
+
+                if !self.matches_symbol(TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        self.consume_symbol(TokenKind::RightParen, "expected ')' after parameter list")?;
+
+        let return_type = if self.matches_symbol(TokenKind::Arrow) {
+            Some(self.collect_type_annotation_until(
+                |kind| matches!(kind, TokenKind::LeftBrace),
+                "expected return type after '->'",
+            )?)
+        } else {
+            None
+        };
+
+        self.consume_symbol(TokenKind::LeftBrace, "expected '{' before function body")?;
+        let body = self.parse_block_statements()?;
+        Ok(Expr::Function {
+            params,
+            return_type,
+            body,
+        })
     }
 
     fn list_literal(&mut self) -> Result<Expr, ParseError> {

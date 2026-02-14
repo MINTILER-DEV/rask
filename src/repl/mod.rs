@@ -565,7 +565,8 @@ fn is_echoable_expr(expr: &crate::parser::ast::Expr) -> bool {
         Expr::Call { .. }
         | Expr::Assign { .. }
         | Expr::OrReturn { .. }
-        | Expr::ListComprehension { .. } => false,
+        | Expr::ListComprehension { .. }
+        | Expr::Function { .. } => false,
     }
 }
 

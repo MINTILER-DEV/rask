@@ -171,6 +171,11 @@ pub enum Expr {
         object: Box<Expr>,
         index: Box<Expr>,
     },
+    Function {
+        params: Vec<Param>,
+        return_type: Option<String>,
+        body: Vec<Stmt>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

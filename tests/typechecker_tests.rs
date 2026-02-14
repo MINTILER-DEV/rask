@@ -96,6 +96,13 @@ fn checks_match_expression_inference() {
 }
 
 #[test]
+fn infers_inline_function_expression_type() {
+    let output = check("adder = def(x: int, y: int) -> int { return x + y }\nvalue = adder(1, 2)")
+        .expect("typecheck should succeed");
+    assert_eq!(output.inferred_types.get("value"), Some(&Type::Int));
+}
+
+#[test]
 fn checks_destructuring_bindings() {
     let output = check("def first(values: List<int>) -> int { [head, _] = values; return head }")
         .expect("typecheck should succeed");
@@ -159,4 +166,11 @@ fn rejects_non_bool_loop_condition() {
         "expected while condition type error, got: {:?}",
         errors
     );
+}
+
+#[test]
+fn allows_equality_comparison_against_nil_for_any_type() {
+    let output = check("headers = {host: \"x\"}\nmissing = headers == nil")
+        .expect("typecheck should succeed");
+    assert_eq!(output.inferred_types.get("missing"), Some(&Type::Bool));
 }

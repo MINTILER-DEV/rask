@@ -81,6 +81,48 @@ fn parses_optional_chain_and_coalesce() {
 }
 
 #[test]
+fn parses_member_call_with_keyword_property_name() {
+    let statements = parse("app.use(router.logger())");
+    match &statements[0] {
+        Stmt::Expr(Expr::Call { callee, args }) => {
+            assert_eq!(args.len(), 1);
+            match callee.as_ref() {
+                Expr::Member {
+                    object, property, ..
+                } => {
+                    assert_eq!(property, "use");
+                    assert!(matches!(object.as_ref(), Expr::Variable(name) if name == "app"));
+                }
+                _ => panic!("expected member call"),
+            }
+            assert!(matches!(args[0], Expr::Call { .. }));
+        }
+        _ => panic!("expected expression statement"),
+    }
+}
+
+#[test]
+fn parses_inline_function_expression_in_call_arguments() {
+    let statements = parse("app.get(\"/\", def(req, res) { return res })");
+    match &statements[0] {
+        Stmt::Expr(Expr::Call { args, .. }) => {
+            assert_eq!(args.len(), 2);
+            assert!(matches!(args[0], Expr::String { .. }));
+            match &args[1] {
+                Expr::Function { params, body, .. } => {
+                    assert_eq!(params.len(), 2);
+                    assert_eq!(params[0].name, "req");
+                    assert_eq!(params[1].name, "res");
+                    assert_eq!(body.len(), 1);
+                }
+                _ => panic!("expected inline function expression"),
+            }
+        }
+        _ => panic!("expected call expression statement"),
+    }
+}
+
+#[test]
 fn parses_function_with_or_return_and_panic_unwrap() {
     let statements = parse(
         "def process(user: string) -> string { parsed = parse(user) or return \"err\"; return parsed! }",

@@ -733,7 +733,11 @@ fn mark_stmt_feature_usage(stmt: &scalf::parser::ast::Stmt, usage: &mut FeatureU
 
     match stmt {
         Stmt::Use { target, .. } => match target {
-            UseTarget::Url(_) => usage.net = true,
+            UseTarget::Url(spec) => {
+                if is_http_import_spec(spec) {
+                    usage.net = true;
+                }
+            }
             UseTarget::ModulePath(path) => {
                 if let Some(part) = path.last() {
                     match part.as_str() {
@@ -818,6 +822,11 @@ fn mark_stmt_feature_usage(stmt: &scalf::parser::ast::Stmt, usage: &mut FeatureU
     }
 }
 
+fn is_http_import_spec(spec: &str) -> bool {
+    let lowered = spec.trim().to_ascii_lowercase();
+    lowered.starts_with("http://") || lowered.starts_with("https://")
+}
+
 fn mark_expr_feature_usage(expr: &scalf::parser::ast::Expr, usage: &mut FeatureUsage) {
     use scalf::parser::ast::Expr;
 
@@ -891,6 +900,11 @@ fn mark_expr_feature_usage(expr: &scalf::parser::ast::Expr, usage: &mut FeatureU
             mark_expr_feature_usage(object, usage);
             mark_expr_feature_usage(index, usage);
         }
+        Expr::Function { body, .. } => {
+            for stmt in body {
+                mark_stmt_feature_usage(stmt, usage);
+            }
+        }
         Expr::Int(_) | Expr::Float(_) | Expr::String { .. } | Expr::Bool(_) | Expr::Nil => {}
     }
 }
@@ -921,6 +935,13 @@ mod tests {
         let program = parse_program("use \"https://example.com/mod.scalf\" as remote");
         let features = script_required_cargo_features(&program);
         assert_eq!(features, vec!["net".to_string()]);
+    }
+
+    #[test]
+    fn build_feature_detection_skips_net_for_local_string_imports() {
+        let program = parse_program("use \"http_router.scl\" as router");
+        let features = script_required_cargo_features(&program);
+        assert!(features.is_empty());
     }
 
     #[test]

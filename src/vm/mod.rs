@@ -264,6 +264,11 @@ impl Compiler {
                     "index expressions are not yet supported by the VM",
                 ))
             }
+            Expr::Function { .. } => {
+                return Err(VmCompileError::new(
+                    "inline function expressions are not yet supported by the VM",
+                ))
+            }
         }
         Ok(())
     }

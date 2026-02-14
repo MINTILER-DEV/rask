@@ -591,6 +591,34 @@ impl Parser {
         }
     }
 
+    pub(crate) fn consume_property_name(&mut self, message: &str) -> Result<String, ParseError> {
+        match self.peek_kind() {
+            TokenKind::Identifier(name) => {
+                let value = name.clone();
+                self.advance();
+                Ok(value)
+            }
+            TokenKind::Def
+            | TokenKind::Print
+            | TokenKind::If
+            | TokenKind::Else
+            | TokenKind::While
+            | TokenKind::For
+            | TokenKind::Return
+            | TokenKind::Or
+            | TokenKind::Match
+            | TokenKind::Use
+            | TokenKind::True
+            | TokenKind::False
+            | TokenKind::Nil => {
+                let value = self.peek().lexeme.clone();
+                self.advance();
+                Ok(value)
+            }
+            _ => Err(ParseError::new(message, self.peek())),
+        }
+    }
+
     pub(crate) fn matches_identifier_literal(&mut self, expected: &str) -> bool {
         match self.peek_kind() {
             TokenKind::Identifier(name) if name == expected => {

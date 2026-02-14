@@ -630,6 +630,58 @@ impl TypeChecker {
                     }
                 }
             }
+            Expr::Function {
+                params,
+                return_type,
+                body,
+            } => self.infer_function_expr(params, return_type.as_deref(), body, errors),
+        }
+    }
+
+    fn infer_function_expr(
+        &mut self,
+        params: &[crate::parser::ast::Param],
+        return_type: Option<&str>,
+        body: &[Stmt],
+        errors: &mut Vec<TypeError>,
+    ) -> Type {
+        let param_types = params
+            .iter()
+            .map(|param| {
+                self.parse_declared_type(param.type_annotation.as_deref(), &param.name, errors)
+            })
+            .collect::<Vec<_>>();
+
+        let declared_return = self.parse_declared_type(return_type, "<anonymous function>", errors);
+
+        self.push_scope();
+        for (param, param_type) in params.iter().zip(param_types.iter()) {
+            self.define(param.name.clone(), param_type.clone());
+        }
+
+        self.function_stack.push(FunctionContext {
+            declared_return: declared_return.clone(),
+            inferred_returns: Vec::new(),
+        });
+
+        for stmt in body {
+            self.check_statement(stmt, errors);
+        }
+
+        let context = self.function_stack.pop().expect("function context exists");
+        self.pop_scope();
+
+        let inferred_return = if !matches!(declared_return, Type::Unknown) {
+            declared_return
+        } else if context.inferred_returns.is_empty() {
+            Type::Nil
+        } else {
+            Type::Union(context.inferred_returns).normalize()
+        };
+
+        Type::Function {
+            params: param_types,
+            ret: Box::new(inferred_return),
         }
     }
 
@@ -789,6 +841,8 @@ impl TypeChecker {
             BinaryOp::Equal | BinaryOp::NotEqual => {
                 if is_assignable(lhs_type, rhs_type)
                     || is_assignable(rhs_type, lhs_type)
+                    || contains_nil(lhs_type)
+                    || contains_nil(rhs_type)
                     || matches!(lhs_type, Type::Unknown)
                     || matches!(rhs_type, Type::Unknown)
                 {

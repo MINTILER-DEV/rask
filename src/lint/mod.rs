@@ -179,6 +179,11 @@ fn lint_expr(expr: &Expr, warnings: &mut Vec<LintWarning>) {
             lint_expr(object, warnings);
             lint_expr(index, warnings);
         }
+        Expr::Function { body, .. } => {
+            for statement in body {
+                lint_statement(statement, warnings);
+            }
+        }
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::String { .. }

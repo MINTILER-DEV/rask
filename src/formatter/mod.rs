@@ -329,6 +329,41 @@ fn format_expr(expr: &Expr) -> String {
             format!("{{{}}}", rendered)
         }
         Expr::Index { object, index } => format!("{}[{}]", format_expr(object), format_expr(index)),
+        Expr::Function {
+            params,
+            return_type,
+            body,
+        } => {
+            let rendered_params = params
+                .iter()
+                .map(|param| {
+                    if let Some(annotation) = &param.type_annotation {
+                        format!("{}: {}", param.name, annotation)
+                    } else {
+                        param.name.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut out = format!("def({})", rendered_params);
+            if let Some(ret) = return_type {
+                out.push_str(&format!(" -> {}", ret));
+            }
+            out.push_str(" {");
+            if body.is_empty() {
+                out.push('}');
+                return out;
+            }
+            let rendered_body = body
+                .iter()
+                .map(format_inline_statement)
+                .collect::<Vec<_>>()
+                .join("; ");
+            out.push(' ');
+            out.push_str(&rendered_body);
+            out.push_str(" }");
+            out
+        }
     }
 }
 
@@ -443,4 +478,12 @@ fn escape_string(input: &str) -> String {
         }
     }
     out
+}
+
+fn format_inline_statement(statement: &Stmt) -> String {
+    format_statement(statement, 0)
+        .replace('\n', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
