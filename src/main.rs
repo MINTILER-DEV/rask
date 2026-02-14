@@ -698,39 +698,73 @@ fn default_temp_embedded_build_dir() -> PathBuf {
     env::temp_dir().join("scalf-embedded-build-cache")
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct FeatureUsage {
+    net: bool,
+    json: bool,
+    crypto: bool,
+}
+
 fn script_required_cargo_features(program: &scalf::parser::ast::Program) -> Vec<String> {
+    let usage = detect_program_feature_usage(program);
     let mut features = Vec::new();
-    if program_requires_net(program) {
+    if usage.net {
         features.push("net".to_string());
+    }
+    if usage.json && !usage.net {
+        features.push("json".to_string());
+    }
+    if usage.crypto && !usage.net {
+        features.push("crypto".to_string());
     }
     features
 }
 
-fn program_requires_net(program: &scalf::parser::ast::Program) -> bool {
-    program.statements.iter().any(stmt_requires_net)
+fn detect_program_feature_usage(program: &scalf::parser::ast::Program) -> FeatureUsage {
+    let mut usage = FeatureUsage::default();
+    for stmt in &program.statements {
+        mark_stmt_feature_usage(stmt, &mut usage);
+    }
+    usage
 }
 
-fn stmt_requires_net(stmt: &scalf::parser::ast::Stmt) -> bool {
+fn mark_stmt_feature_usage(stmt: &scalf::parser::ast::Stmt, usage: &mut FeatureUsage) {
     use scalf::parser::ast::{Stmt, UseTarget};
 
     match stmt {
         Stmt::Use { target, .. } => match target {
-            UseTarget::Url(_) => true,
-            UseTarget::ModulePath(path) => path.last().is_some_and(|part| part == "http"),
+            UseTarget::Url(_) => usage.net = true,
+            UseTarget::ModulePath(path) => {
+                if let Some(part) = path.last() {
+                    match part.as_str() {
+                        "http" => usage.net = true,
+                        "json" => usage.json = true,
+                        "crypto" => usage.crypto = true,
+                        _ => {}
+                    }
+                }
+            }
         },
         Stmt::If {
             condition,
             then_branch,
             else_branch,
         } => {
-            expr_requires_net(condition)
-                || then_branch.iter().any(stmt_requires_net)
-                || else_branch
-                    .as_ref()
-                    .is_some_and(|branch| branch.iter().any(stmt_requires_net))
+            mark_expr_feature_usage(condition, usage);
+            for stmt in then_branch {
+                mark_stmt_feature_usage(stmt, usage);
+            }
+            if let Some(branch) = else_branch {
+                for stmt in branch {
+                    mark_stmt_feature_usage(stmt, usage);
+                }
+            }
         }
         Stmt::While { condition, body } => {
-            expr_requires_net(condition) || body.iter().any(stmt_requires_net)
+            mark_expr_feature_usage(condition, usage);
+            for stmt in body {
+                mark_stmt_feature_usage(stmt, usage);
+            }
         }
         Stmt::For {
             initializer,
@@ -738,72 +772,126 @@ fn stmt_requires_net(stmt: &scalf::parser::ast::Stmt) -> bool {
             increment,
             body,
         } => {
-            initializer
-                .as_ref()
-                .is_some_and(|stmt| stmt_requires_net(stmt))
-                || condition.as_ref().is_some_and(expr_requires_net)
-                || increment.as_ref().is_some_and(expr_requires_net)
-                || body.iter().any(stmt_requires_net)
+            if let Some(stmt) = initializer {
+                mark_stmt_feature_usage(stmt, usage);
+            }
+            if let Some(expr) = condition {
+                mark_expr_feature_usage(expr, usage);
+            }
+            if let Some(expr) = increment {
+                mark_expr_feature_usage(expr, usage);
+            }
+            for stmt in body {
+                mark_stmt_feature_usage(stmt, usage);
+            }
         }
         Stmt::ForIn { iterable, body, .. } => {
-            expr_requires_net(iterable) || body.iter().any(stmt_requires_net)
+            mark_expr_feature_usage(iterable, usage);
+            for stmt in body {
+                mark_stmt_feature_usage(stmt, usage);
+            }
         }
-        Stmt::Test { body, .. } => body.iter().any(stmt_requires_net),
+        Stmt::Test { body, .. } => {
+            for stmt in body {
+                mark_stmt_feature_usage(stmt, usage);
+            }
+        }
         Stmt::Assert { condition, message } => {
-            expr_requires_net(condition) || message.as_ref().is_some_and(expr_requires_net)
+            mark_expr_feature_usage(condition, usage);
+            if let Some(expr) = message {
+                mark_expr_feature_usage(expr, usage);
+            }
         }
-        Stmt::VarDecl { initializer, .. } => expr_requires_net(initializer),
-        Stmt::DestructureDecl { initializer, .. } => expr_requires_net(initializer),
-        Stmt::FunctionDef { body, .. } => body.iter().any(stmt_requires_net),
-        Stmt::Return { value } => value.as_ref().is_some_and(expr_requires_net),
-        Stmt::Print { expr } | Stmt::Expr(expr) => expr_requires_net(expr),
+        Stmt::VarDecl { initializer, .. } => mark_expr_feature_usage(initializer, usage),
+        Stmt::DestructureDecl { initializer, .. } => mark_expr_feature_usage(initializer, usage),
+        Stmt::FunctionDef { body, .. } => {
+            for stmt in body {
+                mark_stmt_feature_usage(stmt, usage);
+            }
+        }
+        Stmt::Return { value } => {
+            if let Some(expr) = value {
+                mark_expr_feature_usage(expr, usage);
+            }
+        }
+        Stmt::Print { expr } | Stmt::Expr(expr) => mark_expr_feature_usage(expr, usage),
     }
 }
 
-fn expr_requires_net(expr: &scalf::parser::ast::Expr) -> bool {
+fn mark_expr_feature_usage(expr: &scalf::parser::ast::Expr, usage: &mut FeatureUsage) {
     use scalf::parser::ast::Expr;
 
     match expr {
-        Expr::Variable(name) => name == "http",
+        Expr::Variable(name) => match name.as_str() {
+            "http" => usage.net = true,
+            "json" => usage.json = true,
+            "crypto" => usage.crypto = true,
+            _ => {}
+        },
         Expr::Unary { rhs, .. } | Expr::PanicUnwrap(rhs) | Expr::Grouping(rhs) => {
-            expr_requires_net(rhs)
+            mark_expr_feature_usage(rhs, usage)
         }
         Expr::Binary { lhs, rhs, .. } | Expr::Coalesce { lhs, rhs } => {
-            expr_requires_net(lhs) || expr_requires_net(rhs)
+            mark_expr_feature_usage(lhs, usage);
+            mark_expr_feature_usage(rhs, usage);
         }
-        Expr::Assign { value, .. } => expr_requires_net(value),
+        Expr::Assign { value, .. } => mark_expr_feature_usage(value, usage),
         Expr::Call { callee, args } => {
-            expr_requires_net(callee) || args.iter().any(expr_requires_net)
+            mark_expr_feature_usage(callee, usage);
+            for arg in args {
+                mark_expr_feature_usage(arg, usage);
+            }
         }
         Expr::Member {
             object, property, ..
         } => {
-            expr_requires_net(object)
-                || (matches!(object.as_ref(), Expr::Variable(name) if name == "http")
-                    && matches!(property.as_str(), "get" | "post" | "put" | "delete"))
+            mark_expr_feature_usage(object, usage);
+            if let Expr::Variable(name) = object.as_ref() {
+                match (name.as_str(), property.as_str()) {
+                    ("http", "get" | "post" | "put" | "delete") => usage.net = true,
+                    ("json", "parse" | "stringify") => usage.json = true,
+                    ("crypto", "sha256") => usage.crypto = true,
+                    _ => {}
+                }
+            }
         }
         Expr::OrReturn { lhs, return_value } => {
-            expr_requires_net(lhs) || expr_requires_net(return_value)
+            mark_expr_feature_usage(lhs, usage);
+            mark_expr_feature_usage(return_value, usage);
         }
         Expr::Match { subject, arms } => {
-            expr_requires_net(subject) || arms.iter().any(|arm| expr_requires_net(&arm.value))
+            mark_expr_feature_usage(subject, usage);
+            for arm in arms {
+                mark_expr_feature_usage(&arm.value, usage);
+            }
         }
-        Expr::ListLiteral(items) => items.iter().any(expr_requires_net),
+        Expr::ListLiteral(items) => {
+            for item in items {
+                mark_expr_feature_usage(item, usage);
+            }
+        }
         Expr::ListComprehension {
             expr,
             iterable,
             condition,
             ..
         } => {
-            expr_requires_net(expr)
-                || expr_requires_net(iterable)
-                || condition
-                    .as_ref()
-                    .is_some_and(|value| expr_requires_net(value))
+            mark_expr_feature_usage(expr, usage);
+            mark_expr_feature_usage(iterable, usage);
+            if let Some(value) = condition {
+                mark_expr_feature_usage(value, usage);
+            }
         }
-        Expr::MapLiteral(entries) => entries.iter().any(|entry| expr_requires_net(&entry.value)),
-        Expr::Index { object, index } => expr_requires_net(object) || expr_requires_net(index),
-        Expr::Int(_) | Expr::Float(_) | Expr::String { .. } | Expr::Bool(_) | Expr::Nil => false,
+        Expr::MapLiteral(entries) => {
+            for entry in entries {
+                mark_expr_feature_usage(&entry.value, usage);
+            }
+        }
+        Expr::Index { object, index } => {
+            mark_expr_feature_usage(object, usage);
+            mark_expr_feature_usage(index, usage);
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::String { .. } | Expr::Bool(_) | Expr::Nil => {}
     }
 }
 
@@ -831,6 +919,36 @@ mod tests {
         assert_eq!(features, vec!["net".to_string()]);
 
         let program = parse_program("use \"https://example.com/mod.scalf\" as remote");
+        let features = script_required_cargo_features(&program);
+        assert_eq!(features, vec!["net".to_string()]);
+    }
+
+    #[test]
+    fn build_feature_detection_enables_json_when_used_without_net() {
+        let program = parse_program("value = json.parse(\"{\\\"x\\\":1}\")");
+        let features = script_required_cargo_features(&program);
+        assert_eq!(features, vec!["json".to_string()]);
+
+        let program = parse_program("use std.json as json");
+        let features = script_required_cargo_features(&program);
+        assert_eq!(features, vec!["json".to_string()]);
+    }
+
+    #[test]
+    fn build_feature_detection_enables_crypto_when_used_without_net() {
+        let program = parse_program("digest = crypto.sha256(\"abc\")");
+        let features = script_required_cargo_features(&program);
+        assert_eq!(features, vec!["crypto".to_string()]);
+
+        let program = parse_program("use std.crypto as crypto");
+        let features = script_required_cargo_features(&program);
+        assert_eq!(features, vec!["crypto".to_string()]);
+    }
+
+    #[test]
+    fn build_feature_detection_prefers_net_when_net_json_and_crypto_are_all_used() {
+        let program =
+            parse_program("response = http.get(\"https://example.com\")\nprint(json.stringify(crypto.sha256(\"x\")))");
         let features = script_required_cargo_features(&program);
         assert_eq!(features, vec!["net".to_string()]);
     }

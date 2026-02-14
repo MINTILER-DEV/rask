@@ -17,6 +17,7 @@ use crate::parser::ast::{
 };
 
 use self::value::{Channel, HttpResponseData, PendingHttp, UserFunction, Value};
+#[cfg(feature = "crypto")]
 use sha2::{Digest, Sha256};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -1448,14 +1449,10 @@ impl Runtime {
             }
             "json" => {
                 expect_arity("http.response.json", &args, 0)?;
-                let parsed: serde_json::Value =
-                    serde_json::from_str(&response.body).map_err(|err| {
-                        RuntimeError::new(format!(
-                            "http.response.json failed to parse response body: {}",
-                            err
-                        ))
-                    })?;
-                Ok(json_to_value(parsed))
+                parse_json_text(
+                    &response.body,
+                    "http.response.json failed to parse response body",
+                )
             }
             other => {
                 let candidates = vec!["text".to_string(), "json".to_string()];
@@ -1816,10 +1813,22 @@ impl Runtime {
         Ok(Value::Nil)
     }
 
+    #[cfg(feature = "crypto")]
     fn native_crypto_sha256(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
         expect_arity("crypto.sha256", &args, 1)?;
         let text = expect_string(&args[0], "crypto.sha256 input")?;
         Ok(Value::String(sha256_hex(text.as_bytes())))
+    }
+
+    #[cfg(not(feature = "crypto"))]
+    fn native_crypto_sha256(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        expect_arity("crypto.sha256", &args, 1)?;
+        let _ = args;
+        Err(RuntimeError::new(
+            "crypto.sha256 is unavailable in this build (compiled without 'crypto' feature)",
+        )
+        .with_code("RUNTIME0504")
+        .with_hint("rebuild with crypto support enabled"))
     }
 
     fn native_concurrency_await(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -2508,6 +2517,7 @@ fn import_cache_root() -> PathBuf {
         .join("cache")
 }
 
+#[cfg(feature = "crypto")]
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -2520,6 +2530,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
+#[cfg(feature = "crypto")]
 fn hex_char(nibble: u8) -> char {
     match nibble {
         0..=9 => (b'0' + nibble) as char,
@@ -2919,14 +2930,25 @@ fn native_math_round(args: Vec<Value>) -> Result<Value, RuntimeError> {
     Ok(Value::Int(value.round() as i64))
 }
 
+#[cfg(feature = "json")]
 fn native_json_parse(args: Vec<Value>) -> Result<Value, RuntimeError> {
     expect_arity("json.parse", &args, 1)?;
     let text = expect_string(&args[0], "json.parse input")?;
-    let parsed: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|err| RuntimeError::new(format!("json.parse failed: {}", err)))?;
-    Ok(json_to_value(parsed))
+    parse_json_text(&text, "json.parse failed")
 }
 
+#[cfg(not(feature = "json"))]
+fn native_json_parse(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    expect_arity("json.parse", &args, 1)?;
+    let _ = args;
+    Err(RuntimeError::new(
+        "json.parse is unavailable in this build (compiled without 'json' feature)",
+    )
+    .with_code("RUNTIME0503")
+    .with_hint("rebuild with json support enabled"))
+}
+
+#[cfg(feature = "json")]
 fn native_json_stringify(args: Vec<Value>) -> Result<Value, RuntimeError> {
     if args.is_empty() || args.len() > 2 {
         return Err(RuntimeError::new(
@@ -2949,6 +2971,37 @@ fn native_json_stringify(args: Vec<Value>) -> Result<Value, RuntimeError> {
     Ok(Value::String(encoded))
 }
 
+#[cfg(not(feature = "json"))]
+fn native_json_stringify(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(RuntimeError::new(
+            "json.stringify expects 1 or 2 arguments: value, pretty(bool?)",
+        ));
+    }
+    Err(RuntimeError::new(
+        "json.stringify is unavailable in this build (compiled without 'json' feature)",
+    )
+    .with_code("RUNTIME0503")
+    .with_hint("rebuild with json support enabled"))
+}
+
+#[cfg(feature = "json")]
+fn parse_json_text(text: &str, context: &str) -> Result<Value, RuntimeError> {
+    let parsed: serde_json::Value = serde_json::from_str(text)
+        .map_err(|err| RuntimeError::new(format!("{}: {}", context, err)))?;
+    Ok(json_to_value(parsed))
+}
+
+#[cfg(not(feature = "json"))]
+fn parse_json_text(_text: &str, _context: &str) -> Result<Value, RuntimeError> {
+    Err(RuntimeError::new(
+        "json support is unavailable in this build (compiled without 'json' feature)",
+    )
+    .with_code("RUNTIME0503")
+    .with_hint("rebuild with json support enabled"))
+}
+
+#[cfg(feature = "json")]
 fn json_to_value(value: serde_json::Value) -> Value {
     match value {
         serde_json::Value::Null => Value::Nil,
@@ -2976,6 +3029,7 @@ fn json_to_value(value: serde_json::Value) -> Value {
     }
 }
 
+#[cfg(feature = "json")]
 fn value_to_json(value: &Value) -> Result<serde_json::Value, RuntimeError> {
     match value {
         Value::Nil => Ok(serde_json::Value::Null),
