@@ -19,3 +19,6 @@ Thumbs.db
 
 # Local release validation script
 /release_validation.scl
+
+# Releases
+/sorted-releases/
