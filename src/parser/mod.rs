@@ -606,6 +606,7 @@ impl Parser {
             | TokenKind::For
             | TokenKind::Return
             | TokenKind::Or
+            | TokenKind::And
             | TokenKind::Match
             | TokenKind::Use
             | TokenKind::True
@@ -705,6 +706,7 @@ fn token_kinds_equal(a: &TokenKind, b: &TokenKind) -> bool {
         | (TokenKind::For, TokenKind::For)
         | (TokenKind::Return, TokenKind::Return)
         | (TokenKind::Or, TokenKind::Or)
+        | (TokenKind::And, TokenKind::And)
         | (TokenKind::Match, TokenKind::Match)
         | (TokenKind::Use, TokenKind::Use)
         | (TokenKind::True, TokenKind::True)

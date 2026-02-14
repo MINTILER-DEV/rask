@@ -44,9 +44,10 @@ fn lexes_nullable_and_union_tokens() {
 
 #[test]
 fn lexes_phase2_control_tokens() {
-    let tokens =
-        scalf::lexer::lex("match value { _ => value or return err }").expect("lex should succeed");
+    let tokens = scalf::lexer::lex("match value { _ => value or return err and ok }")
+        .expect("lex should succeed");
     assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Match)));
     assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::FatArrow)));
     assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Or)));
+    assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::And)));
 }

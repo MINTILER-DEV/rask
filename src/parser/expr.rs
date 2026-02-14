@@ -18,6 +18,40 @@ impl Parser {
                     name,
                     value: Box::new(value),
                 }),
+                Expr::Member {
+                    object,
+                    property,
+                    optional,
+                } => {
+                    if optional {
+                        return Err(ParseError::new(
+                            "invalid assignment target",
+                            self.previous(),
+                        ));
+                    }
+                    Ok(Expr::Call {
+                        callee: Box::new(Expr::Member {
+                            object,
+                            property: "set".to_string(),
+                            optional: false,
+                        }),
+                        args: vec![
+                            Expr::String {
+                                value: property,
+                                has_interpolation: false,
+                            },
+                            value,
+                        ],
+                    })
+                }
+                Expr::Index { object, index } => Ok(Expr::Call {
+                    callee: Box::new(Expr::Member {
+                        object,
+                        property: "set".to_string(),
+                        optional: false,
+                    }),
+                    args: vec![*index, value],
+                }),
                 _ => Err(ParseError::new(
                     "invalid assignment target",
                     self.previous(),
@@ -29,7 +63,7 @@ impl Parser {
     }
 
     fn coalesce(&mut self) -> Result<Expr, ParseError> {
-        let mut expr = self.equality()?;
+        let mut expr = self.logical_and()?;
 
         while self.matches_keyword(TokenKind::Or) {
             if self.matches_keyword(TokenKind::Return) {
@@ -47,12 +81,27 @@ impl Parser {
                     return_value: Box::new(return_value),
                 };
             } else {
-                let rhs = self.equality()?;
+                let rhs = self.logical_and()?;
                 expr = Expr::Coalesce {
                     lhs: Box::new(expr),
                     rhs: Box::new(rhs),
                 };
             }
+        }
+
+        Ok(expr)
+    }
+
+    fn logical_and(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.equality()?;
+
+        while self.matches_keyword(TokenKind::And) {
+            let rhs = self.equality()?;
+            expr = Expr::Binary {
+                lhs: Box::new(expr),
+                op: BinaryOp::And,
+                rhs: Box::new(rhs),
+            };
         }
 
         Ok(expr)
@@ -402,20 +451,13 @@ impl Parser {
         if !self.check_kind(&TokenKind::RightBrace) {
             loop {
                 let key = match self.peek_kind().clone() {
-                    TokenKind::Identifier(name) => {
-                        self.advance();
-                        name
-                    }
                     TokenKind::String { value, .. } => {
                         self.advance();
                         value
                     }
-                    _ => {
-                        return Err(ParseError::new(
-                            "expected identifier or string key in map literal",
-                            self.peek(),
-                        ))
-                    }
+                    _ => self.consume_property_name(
+                        "expected identifier or string key in map literal",
+                    )?,
                 };
                 self.consume_symbol(TokenKind::Colon, "expected ':' after map key")?;
                 let value = self.expression()?;

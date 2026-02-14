@@ -151,6 +151,12 @@ fn evaluates_inline_function_expression() {
 }
 
 #[test]
+fn evaluates_boolean_and_and_or_in_conditions() {
+    let value = run("a = false or true\nb = true and a\na and b");
+    assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn implicit_nil_treats_unknown_variables_as_nil() {
     let value = run_with_implicit_nil("[missing or 5, missing?.name or \"none\"]");
     assert_eq!(

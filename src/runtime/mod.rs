@@ -555,6 +555,7 @@ impl Runtime {
                     name: name.clone(),
                     params,
                     body: body.clone(),
+                    captured: self.capture_visible_bindings(),
                 };
                 self.define(name.clone(), Value::UserFunction(func));
                 Ok(StmtFlow::Continue(Value::Nil))
@@ -843,6 +844,14 @@ impl Runtime {
                 }
             }
             Expr::Binary { lhs, op, rhs } => {
+                if matches!(op, BinaryOp::And) {
+                    let lhs_value = self.eval_expr(lhs)?;
+                    if !lhs_value.is_truthy() {
+                        return Ok(Value::Bool(false));
+                    }
+                    let rhs_value = self.eval_expr(rhs)?;
+                    return Ok(Value::Bool(rhs_value.is_truthy()));
+                }
                 let lhs_value = self.eval_expr(lhs)?;
                 let rhs_value = self.eval_expr(rhs)?;
                 self.eval_binary(op, lhs_value, rhs_value)
@@ -873,10 +882,17 @@ impl Runtime {
                 let lhs_value = self
                     .eval_expr(lhs)
                     .unwrap_or_else(|err| Value::Error(err.message));
-                if matches!(lhs_value, Value::Nil | Value::Error(_)) {
-                    self.eval_expr(rhs)
-                } else {
-                    Ok(lhs_value)
+                match lhs_value {
+                    Value::Bool(value) => {
+                        if value {
+                            Ok(Value::Bool(true))
+                        } else {
+                            let rhs_value = self.eval_expr(rhs)?;
+                            Ok(Value::Bool(rhs_value.is_truthy()))
+                        }
+                    }
+                    Value::Nil | Value::Error(_) => self.eval_expr(rhs),
+                    other => Ok(other),
                 }
             }
             Expr::OrReturn { lhs, return_value } => {
@@ -963,6 +979,7 @@ impl Runtime {
                     name: "<anonymous>".to_string(),
                     params,
                     body: body.clone(),
+                    captured: self.capture_visible_bindings(),
                 }))
             }
         }
@@ -1040,6 +1057,7 @@ impl Runtime {
             BinaryOp::Multiply => numeric_binary(lhs_value, rhs_value, |a, b| a * b),
             BinaryOp::Divide => numeric_binary(lhs_value, rhs_value, |a, b| a / b),
             BinaryOp::Modulo => numeric_binary(lhs_value, rhs_value, |a, b| a % b),
+            BinaryOp::And => Ok(Value::Bool(lhs_value.is_truthy() && rhs_value.is_truthy())),
             BinaryOp::Equal => Ok(Value::Bool(lhs_value == rhs_value)),
             BinaryOp::NotEqual => Ok(Value::Bool(lhs_value != rhs_value)),
             BinaryOp::Less => numeric_compare(lhs_value, rhs_value, |a, b| a < b),
@@ -1108,7 +1126,7 @@ impl Runtime {
 
     fn call_value(&mut self, callee: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
         match callee {
-            Value::UserFunction(func) => self.call_user_function(func, args),
+            Value::UserFunction(func) => self.call_user_function(func, args, None, None),
             Value::NativeFunction(name) => self.call_native(&name, args),
             Value::BoundMethod { receiver, method } => {
                 self.call_bound_method(*receiver, &method, args)
@@ -1128,6 +1146,8 @@ impl Runtime {
         &mut self,
         function: UserFunction,
         args: Vec<Value>,
+        bound_this: Option<Value>,
+        bound_map: Option<std::rc::Rc<std::cell::RefCell<HashMap<String, Value>>>>,
     ) -> Result<Value, RuntimeError> {
         if function.params.len() != args.len() {
             return Err(RuntimeError::new(format!(
@@ -1141,6 +1161,28 @@ impl Runtime {
         self.push_scope();
         self.call_stack
             .push(format!("{}:1: fn {}", self.source_label, function.name));
+        for (name, value) in &function.captured {
+            self.define(name.clone(), value.clone());
+        }
+        let mut updatable_map_keys = Vec::new();
+        if let Some(map_values) = bound_map.as_ref() {
+            let snapshot = map_values.borrow().clone();
+            for (name, value) in snapshot {
+                if !matches!(
+                    value,
+                    Value::UserFunction(_)
+                        | Value::NativeFunction(_)
+                        | Value::BoundMethod { .. }
+                        | Value::Module(_)
+                ) {
+                    updatable_map_keys.push(name.clone());
+                    self.define(name, value);
+                }
+            }
+        }
+        if let Some(this_value) = bound_this {
+            self.define("this".to_string(), this_value);
+        }
         for (name, value) in function.params.iter().zip(args) {
             self.define(name.clone(), value);
         }
@@ -1161,6 +1203,21 @@ impl Runtime {
                 Err(err) => {
                     function_error = Some(err);
                     break;
+                }
+            }
+        }
+
+        if let Some(map_values) = bound_map.as_ref() {
+            let mut updates = Vec::new();
+            for key in updatable_map_keys {
+                if let Some(value) = self.lookup(&key) {
+                    updates.push((key, value));
+                }
+            }
+            if !updates.is_empty() {
+                let mut borrowed = map_values.borrow_mut();
+                for (key, value) in updates {
+                    borrowed.insert(key, value);
                 }
             }
         }
@@ -1399,6 +1456,22 @@ impl Runtime {
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
+        let dynamic = { values.borrow().get(method).cloned() };
+        if let Some(callable) = dynamic {
+            match callable {
+                Value::UserFunction(func) => {
+                    return self.call_user_function(
+                        func,
+                        args,
+                        Some(Value::Map(values.clone())),
+                        Some(values),
+                    );
+                }
+                Value::NativeFunction(name) => return self.call_native(&name, args),
+                _ => {}
+            }
+        }
+
         match method {
             "get" => {
                 expect_arity("map.get", &args, 1)?;
@@ -2045,7 +2118,14 @@ impl Runtime {
                     borrowed.get(property).cloned()
                 };
                 if let Some(value) = existing {
-                    Ok(value)
+                    if matches!(value, Value::UserFunction(_) | Value::NativeFunction(_)) {
+                        Ok(Value::BoundMethod {
+                            receiver: Box::new(Value::Map(values)),
+                            method: property.to_string(),
+                        })
+                    } else {
+                        Ok(value)
+                    }
                 } else {
                     Ok(Value::BoundMethod {
                         receiver: Box::new(Value::Map(values)),
@@ -2265,6 +2345,16 @@ impl Runtime {
             }
         }
         Err(RuntimeError::new(format!("unknown variable '{}'", name)))
+    }
+
+    fn capture_visible_bindings(&self) -> HashMap<String, Value> {
+        let mut captured = HashMap::new();
+        for scope in &self.scopes {
+            for (name, value) in scope {
+                captured.insert(name.clone(), value.clone());
+            }
+        }
+        captured
     }
 
     fn lookup(&self, name: &str) -> Option<Value> {

@@ -9,8 +9,8 @@ const ANSI_NUMBER: &str = "\x1b[93m";
 const ANSI_COMMENT: &str = "\x1b[90m";
 
 const KEYWORDS: &[&str] = &[
-    "def", "print", "if", "else", "while", "for", "return", "or", "match", "use", "true", "false",
-    "nil", "test", "assert", "in",
+    "def", "print", "if", "else", "while", "for", "return", "or", "and", "match", "use", "true",
+    "false", "nil", "test", "assert", "in",
 ];
 
 pub fn needs_more_input(source: &str) -> bool {

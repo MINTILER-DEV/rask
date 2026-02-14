@@ -504,6 +504,11 @@ impl TypeChecker {
             Expr::Coalesce { lhs, rhs } => {
                 let lhs_type = self.infer_expr(lhs, errors);
                 let rhs_type = self.infer_expr(rhs, errors);
+                if (is_assignable(&lhs_type, &Type::Bool) || matches!(lhs_type, Type::Unknown))
+                    && (is_assignable(&rhs_type, &Type::Bool) || matches!(rhs_type, Type::Unknown))
+                {
+                    return Type::Bool;
+                }
                 let non_nil = remove_nil(&lhs_type);
                 if contains_nil(&lhs_type) {
                     Type::Union(vec![non_nil, rhs_type]).normalize()
@@ -576,10 +581,19 @@ impl TypeChecker {
                 if entries.is_empty() {
                     Type::Map(Box::new(Type::String), Box::new(Type::Unknown))
                 } else {
+                    self.push_scope();
+                    self.define("this".to_string(), Type::Unknown);
+                    for entry in entries {
+                        self.define(entry.key.clone(), Type::Unknown);
+                    }
+
                     let mut value_types = Vec::new();
                     for entry in entries {
-                        value_types.push(self.infer_expr(&entry.value, errors));
+                        let value_ty = self.infer_expr(&entry.value, errors);
+                        self.assign_or_define(entry.key.clone(), value_ty.clone());
+                        value_types.push(value_ty);
                     }
+                    self.pop_scope();
                     Type::Map(
                         Box::new(Type::String),
                         Box::new(Type::Union(value_types).normalize()),
@@ -837,6 +851,19 @@ impl TypeChecker {
                     lhs_type, rhs_type
                 )));
                 Type::Unknown
+            }
+            BinaryOp::And => {
+                if (is_assignable(lhs_type, &Type::Bool) || matches!(lhs_type, Type::Unknown))
+                    && (is_assignable(rhs_type, &Type::Bool) || matches!(rhs_type, Type::Unknown))
+                {
+                    Type::Bool
+                } else {
+                    errors.push(TypeError::new(format!(
+                        "operator 'and' expects bool operands, found ('{}', '{}')",
+                        lhs_type, rhs_type
+                    )));
+                    Type::Unknown
+                }
             }
             BinaryOp::Equal | BinaryOp::NotEqual => {
                 if is_assignable(lhs_type, rhs_type)

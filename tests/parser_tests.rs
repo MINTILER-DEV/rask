@@ -81,6 +81,18 @@ fn parses_optional_chain_and_coalesce() {
 }
 
 #[test]
+fn parses_logical_and_expression() {
+    let statements = parse("ok = len(items) > 0 and items[0] == \"x\"");
+    match &statements[0] {
+        Stmt::VarDecl { initializer, .. } => match initializer {
+            Expr::Binary { op, .. } => assert_eq!(*op, BinaryOp::And),
+            _ => panic!("expected logical and expression"),
+        },
+        _ => panic!("expected variable declaration"),
+    }
+}
+
+#[test]
 fn parses_member_call_with_keyword_property_name() {
     let statements = parse("app.use(router.logger())");
     match &statements[0] {
@@ -98,6 +110,23 @@ fn parses_member_call_with_keyword_property_name() {
             assert!(matches!(args[0], Expr::Call { .. }));
         }
         _ => panic!("expected expression statement"),
+    }
+}
+
+#[test]
+fn parses_member_assignment() {
+    let statements = parse("req.params = values");
+    match &statements[0] {
+        Stmt::Expr(Expr::Call { callee, args }) => {
+            assert_eq!(args.len(), 2);
+            assert!(matches!(&args[0], Expr::String { value, .. } if value == "params"));
+            assert!(matches!(&args[1], Expr::Variable(name) if name == "values"));
+            assert!(matches!(
+                callee.as_ref(),
+                Expr::Member { property, .. } if property == "set"
+            ));
+        }
+        _ => panic!("expected lowered set-call expression"),
     }
 }
 

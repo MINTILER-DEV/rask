@@ -14,6 +14,7 @@ pub enum Instruction {
     Multiply,
     Divide,
     Modulo,
+    And,
     Negate,
     Not,
     Equal,
@@ -206,6 +207,7 @@ impl Compiler {
                     BinaryOp::Multiply => Instruction::Multiply,
                     BinaryOp::Divide => Instruction::Divide,
                     BinaryOp::Modulo => Instruction::Modulo,
+                    BinaryOp::And => Instruction::And,
                     BinaryOp::Equal => Instruction::Equal,
                     BinaryOp::NotEqual => Instruction::NotEqual,
                     BinaryOp::Less => Instruction::Less,
@@ -330,6 +332,12 @@ impl Vm {
                 Instruction::Multiply => self.binary_numeric(|a, b| a * b)?,
                 Instruction::Divide => self.binary_numeric(|a, b| a / b)?,
                 Instruction::Modulo => self.binary_numeric(|a, b| a % b)?,
+                Instruction::And => {
+                    let rhs = self.pop()?;
+                    let lhs = self.pop()?;
+                    self.stack
+                        .push(Value::Bool(lhs.is_truthy() && rhs.is_truthy()));
+                }
                 Instruction::Negate => {
                     let value = self.pop()?;
                     match value {
@@ -507,6 +515,7 @@ fn eval_const_binary(
         BinaryOp::Multiply => const_numeric_binary(lhs, rhs, |a, b| a * b)?,
         BinaryOp::Divide => const_numeric_binary(lhs, rhs, |a, b| a / b)?,
         BinaryOp::Modulo => const_numeric_binary(lhs, rhs, |a, b| a % b)?,
+        BinaryOp::And => Value::Bool(lhs.is_truthy() && rhs.is_truthy()),
         BinaryOp::Equal => Value::Bool(lhs == rhs),
         BinaryOp::NotEqual => Value::Bool(lhs != rhs),
         BinaryOp::Less => Value::Bool(const_numeric_order(lhs, rhs, |a, b| a < b)?),

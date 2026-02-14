@@ -43,6 +43,7 @@ pub enum TokenKind {
     For,
     Return,
     Or,
+    And,
     Match,
     Use,
     True,

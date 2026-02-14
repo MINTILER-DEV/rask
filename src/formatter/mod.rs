@@ -445,6 +445,7 @@ fn binary_symbol(op: BinaryOp) -> &'static str {
         BinaryOp::Multiply => "*",
         BinaryOp::Divide => "/",
         BinaryOp::Modulo => "%",
+        BinaryOp::And => "and",
         BinaryOp::Equal => "==",
         BinaryOp::NotEqual => "!=",
         BinaryOp::Less => "<",

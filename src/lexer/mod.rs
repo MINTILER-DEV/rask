@@ -267,6 +267,7 @@ impl<'a> Lexer<'a> {
             "for" => TokenKind::For,
             "return" => TokenKind::Return,
             "or" => TokenKind::Or,
+            "and" => TokenKind::And,
             "match" => TokenKind::Match,
             "use" => TokenKind::Use,
             "true" => TokenKind::True,

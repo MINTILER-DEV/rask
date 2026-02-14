@@ -103,6 +103,13 @@ fn infers_inline_function_expression_type() {
 }
 
 #[test]
+fn infers_boolean_logic_types() {
+    let output =
+        check("a = false or true\nb = a and true\nresult = a and b").expect("typecheck ok");
+    assert_eq!(output.inferred_types.get("result"), Some(&Type::Bool));
+}
+
+#[test]
 fn checks_destructuring_bindings() {
     let output = check("def first(values: List<int>) -> int { [head, _] = values; return head }")
         .expect("typecheck should succeed");

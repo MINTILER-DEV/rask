@@ -13,6 +13,7 @@ pub struct UserFunction {
     pub name: String,
     pub params: Vec<String>,
     pub body: Vec<Stmt>,
+    pub captured: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
