@@ -1,4 +1,4 @@
-# Rask Language Development Plan
+# SCALF Language Development Plan
 
 **Vision**: A scripting language that actually works. No dependency hell, no version fragmentation, no surprises. Write it once, runs everywhere, secure by default.
 

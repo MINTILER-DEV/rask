@@ -1,6 +1,6 @@
-# Rask
+# SCALF
 
-Rask is a scripting language prototype focused on predictability and zero-setup workflows.
+SCALF is a scripting language focused on predictability and zero-setup workflows. No dependency hell, no version fragmentation, secure by default.
 
 ## Current Status
 

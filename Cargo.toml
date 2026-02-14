@@ -1,8 +1,8 @@
 [package]
-name = "rask"
-version = "0.8.1"
+name = "scalf"
+version = "0.1.0"
 edition = "2021"
-description = "Rask language prototype"
+description = "SCALF - A scripting language with zero dependency hell"
 license = "MIT"
 
 [dependencies]
