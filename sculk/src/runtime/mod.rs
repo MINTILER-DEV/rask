@@ -24,16 +24,16 @@ pub const HTTP_RESPONSE_STATUS_SYMBOL: &str = "__sculk_http_response_status";
 #[cfg(feature = "cranelift-backend")]
 pub fn host_symbols() -> [(&'static str, *const u8); 8] {
     [
-        (PRINT_CSTR_SYMBOL, sculk_print_cstr as *const u8),
-        (PRINT_I64_SYMBOL, sculk_print_i64 as *const u8),
-        (PRINT_F64_SYMBOL, sculk_print_f64 as *const u8),
-        (HTTP_GET_SYMBOL, sculk_http_get as *const u8),
-        (HTTP_POST_SYMBOL, sculk_http_post as *const u8),
-        (HTTP_PUT_SYMBOL, sculk_http_put as *const u8),
-        (HTTP_DELETE_SYMBOL, sculk_http_delete as *const u8),
+        (PRINT_CSTR_SYMBOL, __sculk_print_cstr as *const u8),
+        (PRINT_I64_SYMBOL, __sculk_print_i64 as *const u8),
+        (PRINT_F64_SYMBOL, __sculk_print_f64 as *const u8),
+        (HTTP_GET_SYMBOL, __sculk_http_get as *const u8),
+        (HTTP_POST_SYMBOL, __sculk_http_post as *const u8),
+        (HTTP_PUT_SYMBOL, __sculk_http_put as *const u8),
+        (HTTP_DELETE_SYMBOL, __sculk_http_delete as *const u8),
         (
             HTTP_RESPONSE_STATUS_SYMBOL,
-            sculk_http_response_status as *const u8,
+            __sculk_http_response_status as *const u8,
         ),
     ]
 }
@@ -46,7 +46,8 @@ struct HttpResponseHandle {
 
 /// Runtime print shim for nul-terminated UTF-8 strings.
 #[cfg(feature = "cranelift-backend")]
-extern "C" fn sculk_print_cstr(ptr: *const c_char) {
+#[no_mangle]
+pub extern "C" fn __sculk_print_cstr(ptr: *const c_char) {
     if ptr.is_null() {
         println!();
         return;
@@ -59,19 +60,22 @@ extern "C" fn sculk_print_cstr(ptr: *const c_char) {
 
 /// Runtime print shim for signed 64-bit integers.
 #[cfg(feature = "cranelift-backend")]
-extern "C" fn sculk_print_i64(value: i64) {
+#[no_mangle]
+pub extern "C" fn __sculk_print_i64(value: i64) {
     println!("{}", value);
 }
 
 /// Runtime print shim for 64-bit floating-point values.
 #[cfg(feature = "cranelift-backend")]
-extern "C" fn sculk_print_f64(value: f64) {
+#[no_mangle]
+pub extern "C" fn __sculk_print_f64(value: f64) {
     println!("{}", value);
 }
 
 /// Runtime shim for `std.http.get(url)`.
 #[cfg(feature = "cranelift-backend")]
-extern "C" fn sculk_http_get(url: *const c_char) -> *mut c_void {
+#[no_mangle]
+pub extern "C" fn __sculk_http_get(url: *const c_char) -> *mut c_void {
     match http_request(reqwest::Method::GET, url, std::ptr::null()) {
         Ok(ptr) => ptr,
         Err(err) => {
@@ -83,7 +87,8 @@ extern "C" fn sculk_http_get(url: *const c_char) -> *mut c_void {
 
 /// Runtime shim for `std.http.post(url, body)`.
 #[cfg(feature = "cranelift-backend")]
-extern "C" fn sculk_http_post(url: *const c_char, body: *const c_char) -> *mut c_void {
+#[no_mangle]
+pub extern "C" fn __sculk_http_post(url: *const c_char, body: *const c_char) -> *mut c_void {
     match http_request(reqwest::Method::POST, url, body) {
         Ok(ptr) => ptr,
         Err(err) => {
@@ -95,7 +100,8 @@ extern "C" fn sculk_http_post(url: *const c_char, body: *const c_char) -> *mut c
 
 /// Runtime shim for `std.http.put(url, body)`.
 #[cfg(feature = "cranelift-backend")]
-extern "C" fn sculk_http_put(url: *const c_char, body: *const c_char) -> *mut c_void {
+#[no_mangle]
+pub extern "C" fn __sculk_http_put(url: *const c_char, body: *const c_char) -> *mut c_void {
     match http_request(reqwest::Method::PUT, url, body) {
         Ok(ptr) => ptr,
         Err(err) => {
@@ -107,7 +113,8 @@ extern "C" fn sculk_http_put(url: *const c_char, body: *const c_char) -> *mut c_
 
 /// Runtime shim for `std.http.delete(url)`.
 #[cfg(feature = "cranelift-backend")]
-extern "C" fn sculk_http_delete(url: *const c_char) -> *mut c_void {
+#[no_mangle]
+pub extern "C" fn __sculk_http_delete(url: *const c_char) -> *mut c_void {
     match http_request(reqwest::Method::DELETE, url, std::ptr::null()) {
         Ok(ptr) => ptr,
         Err(err) => {
@@ -119,7 +126,8 @@ extern "C" fn sculk_http_delete(url: *const c_char) -> *mut c_void {
 
 /// Runtime shim for reading `response.status` from an HTTP response handle.
 #[cfg(feature = "cranelift-backend")]
-extern "C" fn sculk_http_response_status(response: *mut c_void) -> i64 {
+#[no_mangle]
+pub extern "C" fn __sculk_http_response_status(response: *mut c_void) -> i64 {
     if response.is_null() {
         return 0;
     }

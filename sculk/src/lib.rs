@@ -39,6 +39,24 @@ impl Compiler {
         }
     }
 
+    /// Parse SCALF source text and expand supported imports.
+    pub fn parse_and_expand_source(
+        &self,
+        source: &str,
+        origin_path: Option<&Path>,
+    ) -> Result<Program, CompileError> {
+        let mut frontend = frontend::Frontend::new();
+        frontend.parse_and_expand(source, origin_path)
+    }
+
+    /// Parse a SCALF file and expand supported imports.
+    pub fn parse_and_expand_file(&self, path: &Path) -> Result<Program, CompileError> {
+        let source = std::fs::read_to_string(path).map_err(|err| {
+            CompileError::FrontendError(format!("failed to read '{}': {}", path.display(), err))
+        })?;
+        self.parse_and_expand_source(&source, Some(path))
+    }
+
     /// Compile SCALF source text into Sculk IR.
     pub fn compile_source(
         &self,
@@ -66,8 +84,7 @@ impl Compiler {
         module_name: &str,
         origin_path: Option<&Path>,
     ) -> Result<ir::Module, CompileError> {
-        let mut frontend = frontend::Frontend::new();
-        let program = frontend.parse_and_expand(source, origin_path)?;
+        let program = self.parse_and_expand_source(source, origin_path)?;
         self.compile_program(&program, module_name)
     }
 
