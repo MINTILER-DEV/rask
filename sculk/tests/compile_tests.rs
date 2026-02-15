@@ -133,8 +133,11 @@ fn test_compile_file_with_local_use_import() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(feature = "cranelift-backend")]
 #[test]
-fn test_use_alias_not_yet_supported_in_sculk_frontend() {
+fn test_use_alias_local_import_compiles_and_runs() {
+    use backend::cranelift::CraneliftBackend;
+
     let unique = format!(
         "sculk_use_alias_test_{}_{}",
         std::process::id(),
@@ -153,20 +156,21 @@ fn test_use_alias_not_yet_supported_in_sculk_frontend() {
     let main_path = dir.join("main.scl");
     std::fs::write(
         &main_path,
-        "use \"helper.scl\" as helper\n\ndef main() {\n    return 0\n}\n",
+        "use \"helper.scl\" as helper\n\ndef main() {\n    return helper()\n}\n",
     )
     .expect("main script should be writable");
 
     let compiler = Compiler::new();
-    let err = compiler
+    let module = compiler
         .compile_file(&main_path)
-        .expect_err("use alias should fail until module objects are implemented");
+        .expect("use alias local import should compile");
 
-    assert!(
-        err.to_string().contains("use ... as") || err.to_string().contains("Not implemented"),
-        "unexpected error: {}",
-        err
-    );
+    let backend = CraneliftBackend::new().expect("backend should initialize");
+    let exit_code = backend
+        .run_main(&module)
+        .expect("jit execution should succeed");
+
+    assert_eq!(exit_code, 1);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
