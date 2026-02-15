@@ -1,0 +1,25 @@
+# Advanced native example: call graph + comparison + boolean logic
+
+def first() {
+    return 4
+}
+
+def second() {
+    value = first() + 10
+    return value
+}
+
+def third() {
+    value = second() * 3
+    return value
+}
+
+def main() {
+    total = third()
+    in_range = (total > 20) and (total < 100)
+    print("chain result")
+    print(total)
+    print("in range (1=true, 0=false)")
+    print(in_range)
+    return total
+}

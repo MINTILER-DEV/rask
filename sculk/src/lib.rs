@@ -10,8 +10,12 @@
 
 pub mod backend;
 pub mod codegen;
+mod frontend;
 pub mod ir;
 pub mod optimize;
+pub mod runtime;
+
+use std::path::Path;
 
 use scalf::parser::ast::Program;
 
@@ -41,12 +45,29 @@ impl Compiler {
         source: &str,
         module_name: &str,
     ) -> Result<ir::Module, CompileError> {
-        let tokens = scalf::lexer::lex(source)
-            .map_err(|err| CompileError::FrontendError(format!("lex error: {}", err)))?;
-        let mut parser = scalf::parser::Parser::new(tokens);
-        let program = parser
-            .parse_program()
-            .map_err(|err| CompileError::FrontendError(format!("parse error: {}", err)))?;
+        self.compile_source_with_origin(source, module_name, None)
+    }
+
+    /// Compile a SCALF source file into Sculk IR.
+    pub fn compile_file(&self, path: &Path) -> Result<ir::Module, CompileError> {
+        let source = std::fs::read_to_string(path).map_err(|err| {
+            CompileError::FrontendError(format!("failed to read '{}': {}", path.display(), err))
+        })?;
+        let module_name = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("main");
+        self.compile_source_with_origin(&source, module_name, Some(path))
+    }
+
+    fn compile_source_with_origin(
+        &self,
+        source: &str,
+        module_name: &str,
+        origin_path: Option<&Path>,
+    ) -> Result<ir::Module, CompileError> {
+        let mut frontend = frontend::Frontend::new();
+        let program = frontend.parse_and_expand(source, origin_path)?;
         self.compile_program(&program, module_name)
     }
 
@@ -75,7 +96,7 @@ impl Default for Compiler {
 /// Compilation errors
 #[derive(Debug)]
 pub enum CompileError {
-    /// Frontend (lex/parse) error
+    /// Frontend (lex/parse/import) error
     FrontendError(String),
     /// Feature not yet implemented
     NotImplemented(&'static str),

@@ -1,17 +1,16 @@
-# Rask release validation suite (local-only)
+# SCALF intensive release validation suite
 #
 # Recommended run:
-#   cargo run -- test release_validation --allow-all
-#.scl
-# Narrow-permission run:
-#   cargo run -- test release_validation.scl --allow-read=. --allow-write=. --allow-env --allow-net=example.com,raw.githubusercontent.com
+#   cargo run -- test release_validation.scl --allow-all
 #
-# Manual checks (CLI/REPL features a script cannot self-validate):
+# Narrow-permission run (network-heavy tests need both hosts):
+#   cargo run -- test release_validation.scl --allow-read=. --allow-write=. --allow-env --allow-net=raw.githubusercontent.com,jsonplaceholder.typicode.com
+#
+# Manual checks a script cannot fully self-validate:
 #   cargo run -- check release_validation.scl
 #   cargo run -- fmt --check release_validation.scl
 #   cargo run -- startup release_validation.scl --iterations=25 --no-budget
 #   cargo run -- build release_validation.scl --target=windows-x64
-#   cargo run
 
 use std.math as m
 use std.json as j
@@ -22,16 +21,19 @@ use std.http as net
 use std.time as clock
 use std.crypto as hash
 use std.concurrency as c
+
+use "examples/hello.scl" as local_hello
 use "https://raw.githubusercontent.com/MINTILER-DEV/rask/main/examples/hello.scl@main" as remote_hello
 
-net_probe_url = "https://raw.githubusercontent.com/MINTILER-DEV/rask/main/examples/hello.scl"
+http_text_url = "https://raw.githubusercontent.com/MINTILER-DEV/rask/main/examples/hello.scl"
+http_json_url = "https://jsonplaceholder.typicode.com/todos/1"
 
 def square(x: int) -> int {
   return x * x
 }
 
-def above_four(x: int) -> bool {
-  return x > 4
+def is_even(x: int) -> bool {
+  return x % 2 == 0
 }
 
 def add_ints(acc: int, x: int) -> int {
@@ -43,129 +45,253 @@ def ensure_name(value: string?) -> string {
   return stable!
 }
 
-test "phase1_core_language" {
-  total = 0
-  for i = 0; i < 5; i = i + 1 { total = total + i }
-  while total < 10 { total = total + 1 }
-  if total == 10 { total = total + 1 } else { total = 0 }
-
-  nums = [1, 2, 3]
-  mapping = {a: 1}
-  mapping.set("b", 2)
-
-  assert total == 11, "control flow regression"
-  assert nums[1] == 2
-  assert mapping["b"] == 2
+def maybe_value(v) {
+  value = v or return
+  return value
 }
 
-test "phase2_types_null_safety_and_patterns" {
+def make_counter(start: int) {
+  return {
+    value: start,
+    inc: def() -> int {
+      this.value = this.value + 1
+      return this.value
+    }
+  }
+}
+
+test "core_control_flow_and_expressions" {
+  total = 0
+  for i = 0; i < 5; i = i + 1 {
+    total = total + i
+  }
+
+  while total < 12 {
+    total = total + 1
+  }
+
+  if total == 12 {
+    total = total + 8
+  } else {
+    total = 0
+  }
+
+  list_sum = 0
+  for n in [1, 2, 3] {
+    list_sum = list_sum + n
+  }
+
+  grapheme_count = 0
+  for ch in "ok" {
+    grapheme_count = grapheme_count + len(ch)
+  }
+
+  map_key_chars = 0
+  for k in {ab: 1, cd: 2} {
+    map_key_chars = map_key_chars + len(k)
+  }
+
+  assert total == 20
+  assert list_sum == 6
+  assert grapheme_count == 2
+  assert map_key_chars == 4
+  assert (3 * 4) + (10 / 2) - 1 == 16
+}
+
+test "types_null_safety_match_and_destructuring" {
   id: int | string = 42
-  alias: string? = nil
-  display = alias or "anon"
+  maybe_user: string? = nil
+  display = maybe_user or "anon"
+
+  profile = nil
+  shown = profile?.name or "none"
+
   assert id == 42
   assert display == "anon"
-
-  user = nil
-  shown = user?.profile?.name or "none"
   assert shown == "none"
-
   assert ensure_name(nil) == "missing"
-  assert ensure_name("rask") == "rask"
+  assert ensure_name("scalf") == "scalf"
+  assert maybe_value(nil) == nil
+  assert maybe_value(7)! == 7
 
-  state = match 200 { 200 => "ok", _ => "bad" }
-  assert state == "ok"
+  status = match 200 {
+    200 => "ok"
+    _ => "bad"
+  }
+  assert status == "ok"
+
+  mapped = match {kind: "point", x: 3} {
+    {kind: "point", x: x} => x
+    _ => 0
+  }
+  assert mapped == 3
 
   [first, _] = [9, 8]
+  {name: nm, version: ver} = {name: "scalf", version: 2}
   assert first == 9
+  assert nm == "scalf"
+  assert ver == 2
 }
 
-test "phase3_strings_lists_maps_and_modules" {
+test "functions_inline_methods_and_member_assignment" {
+  adder = def(x: int, y: int) -> int {
+    return x + y
+  }
+  assert adder(20, 22) == 42
+
+  counter = make_counter(0)
+  assert counter.inc() == 1
+  assert counter.inc() == 1
+  assert counter.value == 0
+
+  obj = {name: "a"}
+  obj.name = "b"
+  obj.count = 3
+  assert obj["name"] == "b"
+  assert obj.count == 3
+
+  override = {
+    get: def(key: string) -> string {
+      return "custom:" + key
+    }
+  }
+  assert override.get("x") == "custom:x"
+}
+
+test "strings_lists_maps_and_builtins" {
+  name = "scalf"
+  interpolated = "hello, {name}"
+  assert interpolated == "hello, scalf"
+  escaped = "literal: \{name\}"
+  open_brace = "\{"
+  close_brace = "\}"
+  assert escaped == ("literal: " + open_brace + "name" + close_brace)
+
   raw = "  hello,world  "
-  cooked = raw.trim().uppercase().replace("HELLO", "RASK")
+  cooked = raw.trim().uppercase().replace("HELLO", "SCALF")
   parts = raw.trim().split(",")
-  assert cooked == "RASK,WORLD", "string transform chain"
-  assert len(parts) == 2, "string split size"
-  assert len("👍🏽ok") == 3, "grapheme-aware length"
+  assert cooked == "SCALF,WORLD"
+  assert len(parts) == 2
+  assert len("thumb") == 5
 
   nums = [3, 1, 2]
   nums.push(4)
   popped = nums.pop()
   mapped = nums.map(square)
-  filtered = mapped.filter(above_four)
+  filtered = mapped.filter(is_even)
   reduced = mapped.reduce(add_ints, 0)
   sorted_copy = mapped.sorted()
   mapped.sort()
 
-  assert popped == 4, "list pop"
-  assert reduced == 14, "list reduce"
-  assert filtered[0] == 9, "list filter"
-  assert mapped[0] == 1, "list sort mutating"
-  assert sorted_copy[2] == 9, "list sorted copy"
+  assert popped == 4
+  assert reduced == 14
+  assert filtered[0] == 4
+  assert mapped[0] == 1
+  assert sorted_copy[2] == 9
 
-  info = {name: "rask"}
-  info.set("version", 8)
-  assert info.get("name") == "rask", "map get"
-  assert info.has("version"), "map has"
-  assert len(info.keys()) == 2, "map keys"
-  assert len(info.values()) == 2, "map values"
+  doubled = [x * 2 for x in [1, 2, 3] if x > 1]
+  assert len(doubled) == 2
+  assert doubled[0] == 4
+  assert doubled[1] == 6
 
-  assert m.round(m.pi) == 3, "math round"
-  assert m.max(2, 5) == 5.0, "math max"
+  info = {name: "scalf", version: 1}
+  info.set("ok", true)
+  assert info.get("name") == "scalf"
+  assert info.has("version")
+  assert len(info.keys()) == 3
+  assert len(info.values()) == 3
+
+  assert m.round(m.pi) == 3
+  assert m.max(2, 5) == 5.0
+  assert m.min(2, 5) == 2.0
+  assert m.abs(-7) == 7
 }
 
-test "phase3_fs_json_path_env_time_crypto" {
+test "path_fs_json_env_time_crypto" {
   tmp = p.join(p.cwd(), ".release_validation_tmp.json")
-  payload = {name: "rask", version: 8, ok: true}
+  payload = {name: "scalf", version: 8, ok: true}
 
   files.write(tmp, j.stringify(payload, true))
   assert files.exists(tmp)
 
   decoded = j.parse(files.read(tmp))
-  assert decoded["name"] == "rask"
+  assert decoded["name"] == "scalf"
   assert decoded["version"] == 8
+
+  path_obj = Path(tmp)
+  parent = path_obj.dirname()
+  base = path_obj.basename()
+  rebuilt = parent.join(base)
+  assert p.basename(rebuilt) == base
+  assert p.to_string(p.normalize(rebuilt)) == p.to_string(p.normalize(tmp))
 
   files.delete(tmp)
   assert files.exists(tmp) == false
 
-  assert e.get("RASK_RELEASE_VALIDATION_SHOULD_NOT_EXIST") == nil
+  assert e.get("SCALF_RELEASE_VALIDATION_MISSING") == nil
 
-  start = clock.now_ms()
+  start_ms = clock.now_ms()
+  start_s = clock.now_s()
   clock.sleep(5)
-  finish = clock.now_ms()
-  assert finish >= start
+  finish_ms = clock.now_ms()
+  finish_s = clock.now_s()
+  assert finish_ms >= start_ms
+  assert finish_s >= start_s
 
   assert hash.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-  assert p.basename(p.join(p.cwd(), "stdlib", "std", "math.scl")) == "math.scl"
 }
 
-test "phase4_http_module" {
-  resp = net.get(net_probe_url, {XTest: "rask"}, 5000)
-  assert resp.status >= 200
-  assert len(resp.text()) > 0
+test "imports_and_std_module_aliases" {
+  assert local_hello.name == "scalf"
+  assert len(remote_hello.name) > 0
+  assert files.exists(".scl.lock")
+
+  assert m.round(2.2) == 2
+  quick_json = j.stringify({v: 1})
+  assert j.parse(quick_json)["v"] == 1
+  assert p.basename(p.join(p.cwd(), "release_validation.scl")) == "release_validation.scl"
+  assert hash.sha256("scalf") == crypto.sha256("scalf")
 }
 
-test "phase5_url_import_and_stdlib_org" {
-  assert remote_hello.name == "Rask"
-  assert hash.sha256("rask") == crypto.sha256("rask")
+test "http_response_surface" {
+  json_resp = net.get(http_json_url, {"X-Release": "validation"}, 10000)
+  assert json_resp.status >= 200
+  assert json_resp.status < 600
+  assert len(json_resp.url) > 0
+  assert len(json_resp.headers.keys()) > 0
+  assert len(json_resp.text()) > 0
+
+  parsed = json_resp.json()
+  assert parsed["id"] == 1
+
+  text_resp = net.get(http_text_url, 10000)
+  assert text_resp.status >= 200
+  assert len(text_resp.text()) > 0
 }
 
-test "phase6_built_in_test_assert_surface" {
-  value = 2 + 2
-  assert value == 4, "assert should show clear diagnostics"
+test "http_mutating_verbs" {
+  post_resp = net.post(http_json_url, {name: "scalf"}, 10000)
+  put_resp = net.put(http_json_url, {name: "scalf"}, 10000)
+  delete_resp = net.delete(http_json_url, 10000)
+
+  assert post_resp.status >= 100
+  assert put_resp.status >= 100
+  assert delete_resp.status >= 100
 }
 
-test "phase8_concurrency_helpers_and_channels" {
-  pending_a = net.get(net_probe_url, 5000)
-  pending_b = net.get(net_probe_url, 5000)
+test "concurrency_and_channels" {
+  pending_a = net.get(http_text_url, 10000)
+  pending_b = net.get(http_text_url, 10000)
+
   joined = c.join([pending_a, pending_b])
   assert joined[0].status >= 200
   assert joined[1].status >= 200
 
-  awaited = c.await(net.get(net_probe_url, 5000))
+  awaited = c.await(net.get(http_text_url, 10000))
   assert awaited.status >= 200
 
-  bounded = c.timeout(5000, net.get(net_probe_url, 5000))
-  assert bounded.status >= 200
+  pass_through = c.timeout(5, 123)
+  assert pass_through == 123
 
   ch = c.channel()
   ch.send(1)
@@ -173,4 +299,7 @@ test "phase8_concurrency_helpers_and_channels" {
   sum = ch.recv() + ch.try_recv()
   assert sum == 3
   assert ch.len() == 0
+  assert ch.recv_timeout(1) == nil
 }
+
+

@@ -1,0 +1,10 @@
+# Advanced native example: local `use` import expansion
+
+use "math_utils.scl"
+
+def main() {
+    total = imported_seed() + imported_increment()
+    print("import worked")
+    print(total)
+    return total
+}

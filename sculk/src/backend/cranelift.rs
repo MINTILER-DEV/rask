@@ -4,8 +4,6 @@
 
 #[cfg(feature = "cranelift-backend")]
 use std::collections::HashMap;
-#[cfg(feature = "cranelift-backend")]
-use std::ffi::{c_char, CStr};
 
 #[cfg(feature = "cranelift-backend")]
 use cranelift::codegen::isa::OwnedTargetIsa;
@@ -23,6 +21,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use crate::backend::Backend;
 use crate::ir::{BinOp, Function as IrFunction, Instruction, Module, Terminator, Type, Value};
+use crate::runtime;
 use crate::CompileError;
 
 /// Cranelift code generator.
@@ -59,8 +58,9 @@ impl CraneliftBackend {
     pub fn run_main(&self, module: &Module) -> Result<i64, CompileError> {
         let mut jit_builder =
             JITBuilder::new(cranelift_module::default_libcall_names()).map_err(module_error)?;
-        jit_builder.symbol("__sculk_print_cstr", sculk_print_cstr as *const u8);
-        jit_builder.symbol("__sculk_print_i64", sculk_print_i64 as *const u8);
+        for (name, ptr) in runtime::host_symbols() {
+            jit_builder.symbol(name, ptr);
+        }
 
         let mut jit_module = JITModule::new(jit_builder);
         let compiled = compile_into_module(&mut jit_module, module)?;
@@ -116,11 +116,47 @@ impl Backend for CraneliftBackend {
 }
 
 #[cfg(feature = "cranelift-backend")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeValueKind {
+    Integer,
+    Float,
+    StringPtr,
+    Unknown,
+}
+
+#[cfg(feature = "cranelift-backend")]
 struct RuntimeImports {
     print_cstr: FuncId,
     print_i64: FuncId,
+    print_f64: FuncId,
+    http_get: FuncId,
+    http_post: FuncId,
+    http_put: FuncId,
+    http_delete: FuncId,
+    http_response_status: FuncId,
 }
 
+#[cfg(feature = "cranelift-backend")]
+fn runtime_call_ids(runtime: &RuntimeImports) -> [(&'static str, FuncId); 5] {
+    [
+        ("__sculk_http_get", runtime.http_get),
+        ("__sculk_http_post", runtime.http_post),
+        ("__sculk_http_put", runtime.http_put),
+        ("__sculk_http_delete", runtime.http_delete),
+        ("__sculk_http_response_status", runtime.http_response_status),
+    ]
+}
+
+#[cfg(feature = "cranelift-backend")]
+fn infer_runtime_call_result_kind(func_name: &str) -> RuntimeValueKind {
+    match func_name {
+        "__sculk_http_get" | "__sculk_http_post" | "__sculk_http_put" | "__sculk_http_delete" => {
+            RuntimeValueKind::Unknown
+        }
+        "__sculk_http_response_status" => RuntimeValueKind::Integer,
+        _ => RuntimeValueKind::Unknown,
+    }
+}
 #[cfg(feature = "cranelift-backend")]
 struct CompiledFunctions {
     functions: HashMap<String, FuncId>,
@@ -244,6 +280,7 @@ fn lower_function<M: ClifModule>(
     builder.append_block_params_for_function_params(entry);
 
     let mut variables: HashMap<String, ClifValue> = HashMap::new();
+    let mut value_kinds: HashMap<String, RuntimeValueKind> = HashMap::new();
     for (index, param) in ir_function.params.iter().enumerate() {
         let Some(value) = builder.block_params(entry).get(index) else {
             return Err(CompileError::InvalidIR(format!(
@@ -252,15 +289,23 @@ fn lower_function<M: ClifModule>(
             )));
         };
         variables.insert(param.name.clone(), *value);
+        value_kinds.insert(param.name.clone(), runtime_kind_for_type(&param.ty));
     }
 
     let print_cstr_ref = module.declare_func_in_func(runtime.print_cstr, builder.func);
     let print_i64_ref = module.declare_func_in_func(runtime.print_i64, builder.func);
+    let print_f64_ref = module.declare_func_in_func(runtime.print_f64, builder.func);
 
     let mut function_refs = HashMap::new();
     for (name, id) in function_ids {
         let func_ref = module.declare_func_in_func(*id, builder.func);
         function_refs.insert(name.clone(), func_ref);
+    }
+
+    let mut runtime_function_refs = HashMap::new();
+    for (name, id) in runtime_call_ids(runtime) {
+        let func_ref = module.declare_func_in_func(id, builder.func);
+        runtime_function_refs.insert(name.to_string(), func_ref);
     }
 
     for block in &ir_function.blocks {
@@ -275,10 +320,13 @@ fn lower_function<M: ClifModule>(
                 module,
                 instruction,
                 &mut variables,
+                &mut value_kinds,
                 string_pool,
                 &function_refs,
+                &runtime_function_refs,
                 print_cstr_ref,
                 print_i64_ref,
+                print_f64_ref,
                 builder,
             )?;
         }
@@ -297,20 +345,25 @@ fn lower_function<M: ClifModule>(
 }
 
 #[cfg(feature = "cranelift-backend")]
+#[allow(clippy::too_many_arguments)]
 fn lower_instruction<M: ClifModule>(
     module: &mut M,
     instruction: &Instruction,
     variables: &mut HashMap<String, ClifValue>,
+    value_kinds: &mut HashMap<String, RuntimeValueKind>,
     string_pool: &mut StringPool,
     function_refs: &HashMap<String, cranelift::codegen::ir::FuncRef>,
+    runtime_function_refs: &HashMap<String, cranelift::codegen::ir::FuncRef>,
     print_cstr_ref: cranelift::codegen::ir::FuncRef,
     print_i64_ref: cranelift::codegen::ir::FuncRef,
+    print_f64_ref: cranelift::codegen::ir::FuncRef,
     builder: &mut FunctionBuilder,
 ) -> Result<(), CompileError> {
     match instruction {
         Instruction::Assign { dest, value } => {
             let lowered = lower_value(module, value, variables, string_pool, builder)?;
             variables.insert(dest.clone(), lowered);
+            value_kinds.insert(dest.clone(), infer_ir_value_kind(value, value_kinds));
             Ok(())
         }
         Instruction::BinOp {
@@ -323,6 +376,16 @@ fn lower_instruction<M: ClifModule>(
             let rhs = lower_value(module, right, variables, string_pool, builder)?;
             let result = lower_binop(*op, lhs, rhs, builder);
             variables.insert(dest.clone(), result);
+
+            let lhs_kind = infer_ir_value_kind(left, value_kinds);
+            let rhs_kind = infer_ir_value_kind(right, value_kinds);
+            let result_kind =
+                if lhs_kind == RuntimeValueKind::Float || rhs_kind == RuntimeValueKind::Float {
+                    RuntimeValueKind::Float
+                } else {
+                    RuntimeValueKind::Integer
+                };
+            value_kinds.insert(dest.clone(), result_kind);
             Ok(())
         }
         Instruction::Call { dest, func, args } => {
@@ -333,13 +396,17 @@ fn lower_instruction<M: ClifModule>(
                     ));
                 }
 
-                match &args[0] {
-                    Value::String(_) => {
-                        let arg = lower_value(module, &args[0], variables, string_pool, builder)?;
+                let arg = lower_value(module, &args[0], variables, string_pool, builder)?;
+                let arg_kind = infer_ir_value_kind(&args[0], value_kinds);
+                match arg_kind {
+                    RuntimeValueKind::StringPtr => {
                         builder.ins().call(print_cstr_ref, &[arg]);
                     }
-                    _ => {
-                        let arg = lower_value(module, &args[0], variables, string_pool, builder)?;
+                    RuntimeValueKind::Float => {
+                        let arg = value_to_f64(arg, builder);
+                        builder.ins().call(print_f64_ref, &[arg]);
+                    }
+                    RuntimeValueKind::Integer | RuntimeValueKind::Unknown => {
                         let arg = value_to_i64(arg, builder);
                         builder.ins().call(print_i64_ref, &[arg]);
                     }
@@ -348,13 +415,22 @@ fn lower_instruction<M: ClifModule>(
                 if let Some(dest) = dest {
                     let zero = builder.ins().iconst(types::I64, 0);
                     variables.insert(dest.clone(), zero);
+                    value_kinds.insert(dest.clone(), RuntimeValueKind::Integer);
                 }
                 return Ok(());
             }
 
-            let func_ref = function_refs.get(func).copied().ok_or_else(|| {
-                CompileError::InvalidIR(format!("unknown call target '{}'", func))
-            })?;
+            let (func_ref, runtime_kind) = if let Some(func_ref) = function_refs.get(func).copied()
+            {
+                (func_ref, None)
+            } else if let Some(func_ref) = runtime_function_refs.get(func).copied() {
+                (func_ref, Some(infer_runtime_call_result_kind(func)))
+            } else {
+                return Err(CompileError::InvalidIR(format!(
+                    "unknown call target '{}'",
+                    func
+                )));
+            };
 
             let mut lowered_args = Vec::with_capacity(args.len());
             for arg in args {
@@ -367,9 +443,14 @@ fn lower_instruction<M: ClifModule>(
                 let results = builder.inst_results(call);
                 if let Some(first) = results.first().copied() {
                     variables.insert(dest_name.clone(), first);
+                    value_kinds.insert(
+                        dest_name.clone(),
+                        runtime_kind.unwrap_or(RuntimeValueKind::Unknown),
+                    );
                 } else {
                     let zero = builder.ins().iconst(types::I64, 0);
                     variables.insert(dest_name.clone(), zero);
+                    value_kinds.insert(dest_name.clone(), RuntimeValueKind::Integer);
                 }
             }
             Ok(())
@@ -510,12 +591,52 @@ fn lower_binop(
 }
 
 #[cfg(feature = "cranelift-backend")]
+fn runtime_kind_for_type(ty: &Type) -> RuntimeValueKind {
+    match ty {
+        Type::Float => RuntimeValueKind::Float,
+        Type::String | Type::Ptr(_) => RuntimeValueKind::StringPtr,
+        Type::Int | Type::Bool => RuntimeValueKind::Integer,
+        Type::Void | Type::Func { .. } => RuntimeValueKind::Unknown,
+    }
+}
+
+#[cfg(feature = "cranelift-backend")]
+fn infer_ir_value_kind(
+    value: &Value,
+    value_kinds: &HashMap<String, RuntimeValueKind>,
+) -> RuntimeValueKind {
+    match value {
+        Value::String(_) => RuntimeValueKind::StringPtr,
+        Value::Float(_) => RuntimeValueKind::Float,
+        Value::Int(_) | Value::Bool(_) | Value::Null => RuntimeValueKind::Integer,
+        Value::Var(name) => value_kinds
+            .get(name)
+            .copied()
+            .unwrap_or(RuntimeValueKind::Unknown),
+    }
+}
+
+#[cfg(feature = "cranelift-backend")]
 fn value_to_i64(value: ClifValue, builder: &mut FunctionBuilder) -> ClifValue {
     let ty = builder.func.dfg.value_type(value);
     if ty == types::I64 {
         value
     } else if ty.is_int() {
         builder.ins().sextend(types::I64, value)
+    } else if ty == types::F64 {
+        builder.ins().fcvt_to_sint(types::I64, value)
+    } else {
+        value
+    }
+}
+
+#[cfg(feature = "cranelift-backend")]
+fn value_to_f64(value: ClifValue, builder: &mut FunctionBuilder) -> ClifValue {
+    let ty = builder.func.dfg.value_type(value);
+    if ty == types::F64 {
+        value
+    } else if ty.is_int() {
+        builder.ins().fcvt_from_sint(types::F64, value)
     } else {
         value
     }
@@ -532,14 +653,15 @@ fn make_signature<M: ClifModule>(
     function: &IrFunction,
 ) -> Result<cranelift::prelude::Signature, CompileError> {
     let mut signature = module.make_signature();
+    let pointer_ty = module.target_config().pointer_type();
 
     for param in &function.params {
-        let ty = map_type_to_clif(&param.ty)?;
+        let ty = map_type_to_clif(&param.ty, pointer_ty)?;
         signature.params.push(AbiParam::new(ty));
     }
 
     if function.return_type != Type::Void {
-        let return_type = map_type_to_clif(&function.return_type)?;
+        let return_type = map_type_to_clif(&function.return_type, pointer_ty)?;
         signature.returns.push(AbiParam::new(return_type));
     }
 
@@ -553,32 +675,97 @@ fn declare_runtime_imports<M: ClifModule>(module: &mut M) -> Result<RuntimeImpor
     let mut print_cstr_sig = module.make_signature();
     print_cstr_sig.params.push(AbiParam::new(pointer_ty));
     let print_cstr = module
-        .declare_function("__sculk_print_cstr", Linkage::Import, &print_cstr_sig)
+        .declare_function(runtime::PRINT_CSTR_SYMBOL, Linkage::Import, &print_cstr_sig)
         .map_err(module_error)?;
 
     let mut print_i64_sig = module.make_signature();
     print_i64_sig.params.push(AbiParam::new(types::I64));
     let print_i64 = module
-        .declare_function("__sculk_print_i64", Linkage::Import, &print_i64_sig)
+        .declare_function(runtime::PRINT_I64_SYMBOL, Linkage::Import, &print_i64_sig)
+        .map_err(module_error)?;
+
+    let mut print_f64_sig = module.make_signature();
+    print_f64_sig.params.push(AbiParam::new(types::F64));
+    let print_f64 = module
+        .declare_function(runtime::PRINT_F64_SYMBOL, Linkage::Import, &print_f64_sig)
+        .map_err(module_error)?;
+
+    let mut http_get_sig = module.make_signature();
+    http_get_sig.params.push(AbiParam::new(pointer_ty));
+    http_get_sig.returns.push(AbiParam::new(pointer_ty));
+    let http_get = module
+        .declare_function(runtime::HTTP_GET_SYMBOL, Linkage::Import, &http_get_sig)
+        .map_err(module_error)?;
+
+    let mut http_post_sig = module.make_signature();
+    http_post_sig.params.push(AbiParam::new(pointer_ty));
+    http_post_sig.params.push(AbiParam::new(pointer_ty));
+    http_post_sig.returns.push(AbiParam::new(pointer_ty));
+    let http_post = module
+        .declare_function(runtime::HTTP_POST_SYMBOL, Linkage::Import, &http_post_sig)
+        .map_err(module_error)?;
+
+    let mut http_put_sig = module.make_signature();
+    http_put_sig.params.push(AbiParam::new(pointer_ty));
+    http_put_sig.params.push(AbiParam::new(pointer_ty));
+    http_put_sig.returns.push(AbiParam::new(pointer_ty));
+    let http_put = module
+        .declare_function(runtime::HTTP_PUT_SYMBOL, Linkage::Import, &http_put_sig)
+        .map_err(module_error)?;
+
+    let mut http_delete_sig = module.make_signature();
+    http_delete_sig.params.push(AbiParam::new(pointer_ty));
+    http_delete_sig.returns.push(AbiParam::new(pointer_ty));
+    let http_delete = module
+        .declare_function(
+            runtime::HTTP_DELETE_SYMBOL,
+            Linkage::Import,
+            &http_delete_sig,
+        )
+        .map_err(module_error)?;
+
+    let mut http_response_status_sig = module.make_signature();
+    http_response_status_sig
+        .params
+        .push(AbiParam::new(pointer_ty));
+    http_response_status_sig
+        .returns
+        .push(AbiParam::new(types::I64));
+    let http_response_status = module
+        .declare_function(
+            runtime::HTTP_RESPONSE_STATUS_SYMBOL,
+            Linkage::Import,
+            &http_response_status_sig,
+        )
         .map_err(module_error)?;
 
     Ok(RuntimeImports {
         print_cstr,
         print_i64,
+        print_f64,
+        http_get,
+        http_post,
+        http_put,
+        http_delete,
+        http_response_status,
     })
 }
 
 #[cfg(feature = "cranelift-backend")]
-fn map_type_to_clif(ty: &Type) -> Result<cranelift::prelude::Type, CompileError> {
+fn map_type_to_clif(
+    ty: &Type,
+    pointer_ty: cranelift::prelude::Type,
+) -> Result<cranelift::prelude::Type, CompileError> {
     match ty {
         Type::Int => Ok(types::I64),
         Type::Bool => Ok(types::I64),
         Type::Float => Ok(types::F64),
+        Type::String | Type::Ptr(_) => Ok(pointer_ty),
         Type::Void => Err(CompileError::InvalidIR(
             "void cannot be used as a concrete value type".to_string(),
         )),
-        Type::String | Type::Ptr(_) | Type::Func { .. } => Err(CompileError::NotImplemented(
-            "this IR type is not yet supported by the Cranelift backend",
+        Type::Func { .. } => Err(CompileError::NotImplemented(
+            "function-typed values are not supported by the Cranelift backend",
         )),
     }
 }
@@ -605,23 +792,6 @@ fn build_native_isa() -> Result<OwnedTargetIsa, CompileError> {
 #[cfg(feature = "cranelift-backend")]
 fn module_error(err: impl std::fmt::Display) -> CompileError {
     CompileError::BackendError(err.to_string())
-}
-
-#[cfg(feature = "cranelift-backend")]
-extern "C" fn sculk_print_cstr(ptr: *const c_char) {
-    if ptr.is_null() {
-        println!();
-        return;
-    }
-
-    // SAFETY: Called from generated code with a pointer to a nul-terminated static string.
-    let text = unsafe { CStr::from_ptr(ptr) };
-    println!("{}", text.to_string_lossy());
-}
-
-#[cfg(feature = "cranelift-backend")]
-extern "C" fn sculk_print_i64(value: i64) {
-    println!("{}", value);
 }
 
 #[cfg(test)]

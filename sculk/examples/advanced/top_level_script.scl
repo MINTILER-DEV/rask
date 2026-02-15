@@ -1,0 +1,13 @@
+# Advanced native example: top-level script mode (no explicit def main)
+
+label = "top-level entry"
+print("top-level entry")
+
+alpha = 12
+beta = 5
+sum = alpha + beta
+product = sum * 3
+print("script sum")
+print(sum)
+print("script product")
+print(product)

@@ -206,3 +206,34 @@ Ask in the main SCALF repo: https://github.com/yourusername/scalf
 ---
 
 **Remember: Bytecode is the default. Sculk is the future. Don't block releases on Sculk.**
+
+## Advanced Example Scripts
+
+The `sculk/examples/advanced/` directory includes larger scripts that run on the current experimental native subset:
+
+- `arithmetic_pipeline.scl` - chained function calls and arithmetic flow
+- `function_chain_logic.scl` - call graph + comparisons + boolean logic
+- `top_level_script.scl` - top-level script mode without explicit `def main`
+- `use_local_module.scl` - local file import via `use "math_utils.scl"`
+
+`use` support in Sculk currently resolves local string imports (`use "file.scl"`). Module-path imports, URL imports, and `as` aliases are not implemented yet.
+
+Run one with:
+
+```bash
+cd sculk
+cargo run -- examples/advanced/arithmetic_pipeline.scl
+```
+
+
+
+### Windows .exe Output
+
+Sculk can emit standalone Windows executables by linking generated object code through `rustc`:
+
+```bash
+cd sculk
+cargo run -- examples/advanced/use_local_module.scl --emit-exe
+# or choose output path
+cargo run -- examples/advanced/use_local_module.scl --emit-exe target/use_local_module.exe
+```

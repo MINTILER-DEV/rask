@@ -6,158 +6,204 @@
 pub mod builder;
 pub mod printer;
 
-/// A compiled module
+/// A compiled module.
 #[derive(Debug, Clone)]
 pub struct Module {
-    /// Module name
+    /// Module name.
     pub name: String,
-    /// Functions defined in this module
+    /// Functions defined in this module.
     pub functions: Vec<Function>,
-    /// Global constants
+    /// Global constants defined in this module.
     pub constants: Vec<Constant>,
 }
 
-/// A function definition
+/// A function definition.
 #[derive(Debug, Clone)]
 pub struct Function {
-    /// Function name
+    /// Function name.
     pub name: String,
-    /// Parameters
+    /// Function parameters.
     pub params: Vec<Parameter>,
-    /// Return type
+    /// Function return type.
     pub return_type: Type,
-    /// Basic blocks
+    /// Basic blocks in function body.
     pub blocks: Vec<BasicBlock>,
 }
 
-/// Function parameter
+/// Function parameter.
 #[derive(Debug, Clone)]
 pub struct Parameter {
-    /// Parameter name
+    /// Parameter name.
     pub name: String,
-    /// Parameter type
+    /// Parameter type.
     pub ty: Type,
 }
 
-/// A basic block (straight-line code with no branches except at the end)
+/// A basic block (straight-line code with no branches except at the end).
 #[derive(Debug, Clone)]
 pub struct BasicBlock {
-    /// Block label
+    /// Block label.
     pub label: String,
-    /// Instructions in this block
+    /// Instructions in this block.
     pub instructions: Vec<Instruction>,
-    /// Block terminator
+    /// Block terminator.
     pub terminator: Terminator,
 }
 
-/// IR instruction
+/// IR instruction.
 #[derive(Debug, Clone)]
 pub enum Instruction {
-    /// Assign a value to a variable
-    Assign { dest: String, value: Value },
-    /// Binary operation
-    BinOp {
+    /// Assign a value to a destination variable.
+    Assign {
+        /// Destination variable name.
         dest: String,
+        /// Value to assign.
+        value: Value,
+    },
+    /// Evaluate a binary operation and store the result.
+    BinOp {
+        /// Destination variable name.
+        dest: String,
+        /// Binary operator.
         op: BinOp,
+        /// Left operand.
         left: Value,
+        /// Right operand.
         right: Value,
     },
-    /// Function call
+    /// Call a function.
     Call {
+        /// Optional destination variable for the call result.
         dest: Option<String>,
+        /// Function name.
         func: String,
+        /// Positional arguments.
         args: Vec<Value>,
     },
-    /// Load from memory
-    Load { dest: String, addr: Value },
-    /// Store to memory
-    Store { addr: Value, value: Value },
+    /// Load a value from memory.
+    Load {
+        /// Destination variable name.
+        dest: String,
+        /// Address expression.
+        addr: Value,
+    },
+    /// Store a value to memory.
+    Store {
+        /// Address expression.
+        addr: Value,
+        /// Value expression.
+        value: Value,
+    },
 }
 
-/// Block terminator (control flow)
+/// Block terminator (control flow).
 #[derive(Debug, Clone)]
 pub enum Terminator {
-    /// Return from function
+    /// Return from function with an optional value.
     Return(Option<Value>),
-    /// Unconditional branch
-    Branch { target: String },
-    /// Conditional branch
+    /// Unconditional branch to a target block label.
+    Branch {
+        /// Target block label.
+        target: String,
+    },
+    /// Conditional branch to one of two target block labels.
     CondBranch {
+        /// Branch condition expression.
         cond: Value,
+        /// Target label when condition is truthy.
         then_block: String,
+        /// Target label when condition is falsy.
         else_block: String,
     },
-    /// Unreachable code
+    /// Marks unreachable code.
     Unreachable,
 }
 
-/// Binary operation
+/// Binary operation.
 #[derive(Debug, Clone, Copy)]
 pub enum BinOp {
+    /// Integer/float addition.
     Add,
+    /// Integer/float subtraction.
     Sub,
+    /// Integer/float multiplication.
     Mul,
+    /// Integer/float division.
     Div,
+    /// Integer modulo.
     Mod,
+    /// Equality comparison.
     Eq,
+    /// Inequality comparison.
     Ne,
+    /// Less-than comparison.
     Lt,
+    /// Less-than-or-equal comparison.
     Le,
+    /// Greater-than comparison.
     Gt,
+    /// Greater-than-or-equal comparison.
     Ge,
+    /// Logical conjunction.
     And,
+    /// Logical disjunction.
     Or,
 }
 
-/// IR value
+/// IR value.
 #[derive(Debug, Clone)]
 pub enum Value {
-    /// Variable reference
+    /// Variable reference.
     Var(String),
-    /// Integer constant
+    /// Integer constant.
     Int(i64),
-    /// Float constant
+    /// Float constant.
     Float(f64),
-    /// String constant
+    /// String constant.
     String(String),
-    /// Boolean constant
+    /// Boolean constant.
     Bool(bool),
-    /// Null value
+    /// Null value.
     Null,
 }
 
-/// IR type
+/// IR type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
-    /// Void (no value)
+    /// Void (no value).
     Void,
-    /// Integer
+    /// Integer.
     Int,
-    /// Float
+    /// Float.
     Float,
-    /// Boolean
+    /// Boolean.
     Bool,
-    /// String
+    /// String.
     String,
-    /// Pointer to type
+    /// Pointer to another type.
     Ptr(Box<Type>),
-    /// Function type
-    Func { params: Vec<Type>, ret: Box<Type> },
+    /// Function type signature.
+    Func {
+        /// Parameter types.
+        params: Vec<Type>,
+        /// Return type.
+        ret: Box<Type>,
+    },
 }
 
-/// Global constant
+/// Global constant.
 #[derive(Debug, Clone)]
 pub struct Constant {
-    /// Constant name
+    /// Constant name.
     pub name: String,
-    /// Constant type
+    /// Constant type.
     pub ty: Type,
-    /// Constant value
+    /// Constant value.
     pub value: Value,
 }
 
 impl Module {
-    /// Create a new empty module
+    /// Create a new empty module.
     pub fn new(name: String) -> Self {
         Self {
             name,
@@ -168,7 +214,7 @@ impl Module {
 }
 
 impl Function {
-    /// Create a new function
+    /// Create a new function.
     pub fn new(name: String, params: Vec<Parameter>, return_type: Type) -> Self {
         Self {
             name,
@@ -180,7 +226,7 @@ impl Function {
 }
 
 impl BasicBlock {
-    /// Create a new basic block
+    /// Create a new basic block.
     pub fn new(label: String) -> Self {
         Self {
             label,

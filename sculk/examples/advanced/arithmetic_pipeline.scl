@@ -1,0 +1,20 @@
+# Advanced native example: chained calls + arithmetic + string/int output
+
+def seed() {
+    return 7
+}
+
+def compute() {
+    base = seed()
+    scaled = base * 6
+    adjusted = scaled + 2
+    print("computed value")
+    print(adjusted)
+    return adjusted
+}
+
+def main() {
+    result = compute()
+    print("pipeline done")
+    return result
+}

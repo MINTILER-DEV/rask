@@ -87,3 +87,134 @@ def main() {
 
     assert_eq!(exit_code, 0);
 }
+
+#[cfg(feature = "cranelift-backend")]
+#[test]
+fn test_compile_file_with_local_use_import() {
+    use backend::cranelift::CraneliftBackend;
+
+    let unique = format!(
+        "sculk_use_test_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be valid")
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(unique);
+    std::fs::create_dir_all(&dir).expect("temp dir should be creatable");
+
+    let helper_path = dir.join("helper.scl");
+    std::fs::write(
+        &helper_path,
+        "def forty() {\n    return 40\n}\n\ndef two() {\n    return 2\n}\n",
+    )
+    .expect("helper module should be writable");
+
+    let main_path = dir.join("main.scl");
+    std::fs::write(
+        &main_path,
+        "use \"helper.scl\"\n\ndef main() {\n    total = forty() + two()\n    return total\n}\n",
+    )
+    .expect("main script should be writable");
+
+    let compiler = Compiler::new();
+    let module = compiler
+        .compile_file(&main_path)
+        .expect("compile_file should resolve local use imports");
+
+    let backend = CraneliftBackend::new().expect("backend should initialize");
+    let exit_code = backend
+        .run_main(&module)
+        .expect("jit execution should succeed");
+
+    assert_eq!(exit_code, 42);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_use_alias_not_yet_supported_in_sculk_frontend() {
+    let unique = format!(
+        "sculk_use_alias_test_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be valid")
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(unique);
+    std::fs::create_dir_all(&dir).expect("temp dir should be creatable");
+
+    let helper_path = dir.join("helper.scl");
+    std::fs::write(&helper_path, "def helper() {\n    return 1\n}\n")
+        .expect("helper module should be writable");
+
+    let main_path = dir.join("main.scl");
+    std::fs::write(
+        &main_path,
+        "use \"helper.scl\" as helper\n\ndef main() {\n    return 0\n}\n",
+    )
+    .expect("main script should be writable");
+
+    let compiler = Compiler::new();
+    let err = compiler
+        .compile_file(&main_path)
+        .expect_err("use alias should fail until module objects are implemented");
+
+    assert!(
+        err.to_string().contains("use ... as") || err.to_string().contains("Not implemented"),
+        "unexpected error: {}",
+        err
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_compile_std_http_module_path_use() {
+    let source = r#"
+use std.http
+
+response = http.get("https://example.com")
+print(response.status)
+"#;
+
+    let compiler = Compiler::new();
+    let module = compiler
+        .compile_source(source, "http_client")
+        .expect("std.http module-path use should lower in sculk");
+
+    assert!(
+        module.functions.iter().any(|func| func.name == "main"),
+        "expected script main function"
+    );
+}
+
+#[cfg(feature = "cranelift-backend")]
+#[test]
+fn test_function_parameters_are_lowered_and_executable() {
+    use backend::cranelift::CraneliftBackend;
+
+    let source = r#"
+def add(a: int, b: int) -> int {
+    return a + b
+}
+
+def main() {
+    return add(19, 23)
+}
+"#;
+
+    let compiler = Compiler::new();
+    let module = compiler
+        .compile_source(source, "params")
+        .expect("parameterized functions should lower to IR");
+
+    let backend = CraneliftBackend::new().expect("backend should initialize");
+    let exit_code = backend
+        .run_main(&module)
+        .expect("jit execution should succeed");
+
+    assert_eq!(exit_code, 42);
+}

@@ -1,0 +1,9 @@
+# Imported helper module for native `use` example
+
+def imported_seed() {
+    return 20
+}
+
+def imported_increment() {
+    return 22
+}
