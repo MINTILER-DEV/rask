@@ -19,6 +19,8 @@ use std::path::Path;
 
 use scalf::parser::ast::Program;
 
+use crate::optimize::{ConstantFolding, DeadCodeElimination, Inlining, PassManager};
+
 /// Sculk compiler version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -37,6 +39,12 @@ impl Compiler {
             opt_level: 0,
             target: std::env::consts::ARCH.to_string(),
         }
+    }
+
+    /// Create a new compiler with a specific optimization level.
+    pub fn with_opt_level(mut self, opt_level: u8) -> Self {
+        self.opt_level = opt_level.min(3);
+        self
     }
 
     /// Parse SCALF source text and expand supported imports.
@@ -95,7 +103,30 @@ impl Compiler {
         module_name: &str,
     ) -> Result<ir::Module, CompileError> {
         let mut lowering = codegen::lowering::Lowering::new();
-        lowering.lower_program(program, module_name)
+        let mut module = lowering.lower_program(program, module_name)?;
+        self.optimize_module(&mut module)?;
+        Ok(module)
+    }
+
+    fn optimize_module(&self, module: &mut ir::Module) -> Result<(), CompileError> {
+        if self.opt_level == 0 {
+            return Ok(());
+        }
+
+        let mut pass_manager = PassManager::new();
+        pass_manager.add_pass(Box::new(ConstantFolding));
+
+        if self.opt_level >= 2 {
+            pass_manager.add_pass(Box::new(DeadCodeElimination));
+        }
+
+        if self.opt_level >= 3 {
+            pass_manager.add_pass(Box::new(Inlining));
+            pass_manager.add_pass(Box::new(ConstantFolding));
+            pass_manager.add_pass(Box::new(DeadCodeElimination));
+        }
+
+        pass_manager.run(module)
     }
 
     /// Compile SCALF AST to IR.

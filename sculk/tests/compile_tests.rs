@@ -9,6 +9,41 @@ fn test_compiler_creation() {
 }
 
 #[test]
+fn test_opt_level_enables_constant_folding() {
+    let source = r#"
+def main() {
+    return 2 + 3
+}
+"#;
+
+    let compiler = Compiler::new().with_opt_level(1);
+    let module = compiler
+        .compile_source(source, "folded")
+        .expect("source should compile with optimization");
+
+    let main = module
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("module should contain main");
+    let entry = main
+        .blocks
+        .first()
+        .expect("main should have an entry block");
+
+    assert!(
+        !entry
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, ir::Instruction::BinOp { .. })),
+        "expected constant folding to eliminate BinOp"
+    );
+    assert!(matches!(
+        entry.terminator,
+        ir::Terminator::Return(Some(ir::Value::Int(5)))
+    ));
+}
+#[test]
 fn test_ir_module_creation() {
     let module = ir::Module::new("test".to_string());
     assert_eq!(module.name, "test");

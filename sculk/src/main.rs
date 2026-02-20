@@ -33,6 +33,7 @@ fn run() -> Result<(), String> {
     let mut emit_obj: Option<PathBuf> = None;
     let mut emit_exe: Option<Option<PathBuf>> = None;
     let mut execution_mode = ExecutionMode::Runtime;
+    let mut opt_level: u8 = 0;
 
     let mut index = 0;
     while index < args.len() {
@@ -80,6 +81,25 @@ fn run() -> Result<(), String> {
                 emit_exe = Some(Some(PathBuf::from(path)));
                 run_main = false;
             }
+            "--opt-level" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("--opt-level requires a value between 0 and 3".to_string());
+                };
+                opt_level = parse_opt_level(value)?;
+            }
+            "-O0" => {
+                opt_level = 0;
+            }
+            "-O1" => {
+                opt_level = 1;
+            }
+            "-O2" => {
+                opt_level = 2;
+            }
+            "-O3" => {
+                opt_level = 3;
+            }
             _ if arg.starts_with("--emit-obj=") => {
                 let Some(path) = arg.strip_prefix("--emit-obj=") else {
                     unreachable!();
@@ -98,6 +118,12 @@ fn run() -> Result<(), String> {
                 };
                 emit_exe = Some(Some(PathBuf::from(path)));
                 run_main = false;
+            }
+            _ if arg.starts_with("--opt-level=") => {
+                let Some(value) = arg.strip_prefix("--opt-level=") else {
+                    unreachable!();
+                };
+                opt_level = parse_opt_level(value)?;
             }
             _ if arg.starts_with("--") => {
                 return Err(format!("unknown option '{}'", arg));
@@ -118,7 +144,7 @@ fn run() -> Result<(), String> {
     };
 
     let script_path_buf = PathBuf::from(&script_path);
-    let compiler = Compiler::new();
+    let compiler = Compiler::new().with_opt_level(opt_level);
 
     let need_module = emit_ir
         || emit_obj.is_some()
@@ -416,6 +442,18 @@ fn default_exe_output_path(script_path: &str) -> PathBuf {
     PathBuf::from(format!("{}.exe", stem))
 }
 
+fn parse_opt_level(value: &str) -> Result<u8, String> {
+    let parsed = value
+        .parse::<u8>()
+        .map_err(|_| format!("invalid optimization level '{}'; expected 0..=3", value))?;
+    if parsed > 3 {
+        return Err(format!(
+            "invalid optimization level '{}'; expected 0..=3",
+            value
+        ));
+    }
+    Ok(parsed)
+}
 fn usage() -> String {
-    "usage: sculk <file.scl> [--runtime|--native] [--emit-ir] [--emit-obj <path>] [--emit-exe[=<path>]] [--out <path>] [--run|--no-run]".to_string()
+    "usage: sculk <file.scl> [--runtime|--native] [--emit-ir] [--emit-obj <path>] [--emit-exe[=<path>]] [--out <path>] [--run|--no-run] [--opt-level <0-3>|-O0|-O1|-O2|-O3]".to_string()
 }
